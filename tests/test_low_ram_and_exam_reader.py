@@ -109,10 +109,14 @@ Câu 3: 450
         detector.record_message(ch_id, 1, 101, "UserA", "Mày thích solo không bố mày đập chết mày bây giờ")
         detector.record_message(ch_id, 2, 102, "UserB", "Ngon bước ra đây con chó mày thích va chạm à")
 
-        # Đánh giá xung đột mà không gọi Ollama
-        loop = asyncio.new_event_loop()
-        res = loop.run_until_complete(detector.evaluate_conflict(ch_id))
-        loop.close()
+        from unittest.mock import patch
+        from config.settings import settings
+
+        # Đánh giá xung đột mà không gọi Ollama khi OLLAMA_ENABLED=False
+        with patch.object(settings, "OLLAMA_ENABLED", False):
+            loop = asyncio.new_event_loop()
+            res = loop.run_until_complete(detector.evaluate_conflict(ch_id))
+            loop.close()
 
         self.assertTrue(res.is_conflict)
         self.assertFalse(res.ai_used)

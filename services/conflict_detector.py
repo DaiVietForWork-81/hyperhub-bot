@@ -275,8 +275,8 @@ class ConflictDetector:
         involved_names = list(dict.fromkeys(involved_names))[:2]
         offending_ids = [r.message_id for r in records if r.user_id in involved_ids]
 
-        # 1. Kiểm tra cờ OLLAMA_ENABLED (mặc định TẮT để bảo vệ VPS 512MB RAM)
-        ollama_enabled = getattr(settings, "OLLAMA_ENABLED", False)
+        # 1. Kiểm tra cờ OLLAMA_ENABLED (nếu đặt OLLAMA_ENABLED=false trong .env thì tắt 100% để bảo vệ VPS 512MB)
+        ollama_enabled = getattr(settings, "OLLAMA_ENABLED", True)
         if not ollama_enabled:
             is_hard_conflict = (score >= 60)
             dur_ms = (time.time() - t0) * 1000

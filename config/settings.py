@@ -250,6 +250,9 @@ if HAS_PYDANTIC:
         AI_VERIFIER_MODEL: str = Field(
             default="gemma3:4b", description="AI Model for Problem Verification & Logic Enhancement"
         )
+        OLLAMA_ENABLED: bool = Field(
+            default=True, description="Bật/Tắt tính năng gọi Ollama AI cục bộ (Tự động tắt trên VPS 512MB RAM)"
+        )
         OLLAMA_BASE_URL: str = Field(
             default="http://localhost:11434", description="Ollama local server endpoint"
         )

@@ -173,6 +173,13 @@ class CompetitiveProgrammingBot(commands.Bot):
                         "Tự động tắt hoàn toàn model AI ONNX để tránh crash OOM (Out Of Memory), chuyển sang SQLite FTS5 + C++ Native Core."
                     )
                 embedding_cfg = False
+                if getattr(settings, "OLLAMA_ENABLED", True):
+                    logger.warning(
+                        f"🛡️ [Low-RAM Auto-Guard] Phát hiện máy chủ RAM thấp ({total_ram_mb}MB < 1200MB). "
+                        "Tự động tắt OLLAMA_ENABLED=False để bảo vệ VPS 512MB RAM."
+                    )
+                    settings.OLLAMA_ENABLED = False
+
 
             if embedding_cfg:
                 from services.embedding_service import DocumentEmbeddingService
