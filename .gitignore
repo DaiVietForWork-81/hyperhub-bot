@@ -1,0 +1,59 @@
+# ==============================================================================
+# HyperHub Bot (.gitignore)
+# ==============================================================================
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Environments & Secret Configurations
+.env
+.env.*
+!.env.example
+!*.example
+venv/
+env/
+ENV/
+.venv/
+
+# C++ Core Builds & Portable Compiler
+cpp_core/compiler/
+cpp_core/*.dll
+!cpp_core/native_core.dll
+cpp_core/*.so
+cpp_core/*.dylib
+cpp_core/*.o
+cpp_core/*.obj
+cpp_core/*.exp
+cpp_core/*.lib
+
+# Binaries, Dependencies & Toolchains
+bin/
+node_modules/
+
+# Runtime Data, Logs, Databases & Backups
+logs/
+data/
+backups/
+models/
+storage/
+storage_temp/
+doc_temp/
+duel_transcripts/
+bot.db
+bot.db*
+*.db
+*.sqlite
+*.sqlite3
+*.log
+*.lock
+bot.lock
+hardware_cache.json
+
+# Operating System files
+.DS_Store
+Thumbs.db
+desktop.ini
