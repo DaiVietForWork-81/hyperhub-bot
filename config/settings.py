@@ -343,8 +343,8 @@ if HAS_PYDANTIC:
             description="Mã khóa bí mật (Bearer/Header Secret) xác thực giữa Bot và Web",
         )
         EMBEDDING_ENABLED: bool = Field(
-            default=True,
-            description="Bật Semantic Search (model ONNX ~550MB RAM). Tắt để chạy VPS 512MB (fallback BM25/FTS).",
+            default=False,
+            description="Bật Semantic Search (model ONNX ~550MB RAM). Mặc định TẮT cho VPS 512MB (sử dụng FTS5 Super Search + C++ Native Core).",
         )
         EMBEDDING_DEVICE: str = Field(
             default="auto",
