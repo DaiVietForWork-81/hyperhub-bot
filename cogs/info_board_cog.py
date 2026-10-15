@@ -1,4 +1,4 @@
-"""Sổ tay thông tin, bảng giá và đặc quyền các Gói Hyper (Info Board Cog).
+"""Sổ tay thông tin, bảng giá và đặc quyền các Gói Orbit (Info Board Cog).
 
 Tự động ghim và duy trì bảng thông tin thẩm mỹ cao tại kênh #📄・info (ID: 1550896576636129320):
 - Chi tiết 4 Gói: Free, Pro, Ultra, Elite
@@ -73,7 +73,7 @@ class InfoBoardRefreshView(discord.ui.View):
 
 
 class InfoBoardCog(commands.Cog, name="InfoBoard"):
-    """Cog quản lý bảng thông tin Gói Hyper tại kênh #📄・info."""
+    """Cog quản lý bảng thông tin Gói Orbit tại kênh #📄・info."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -124,7 +124,7 @@ class InfoBoardCog(commands.Cog, name="InfoBoard"):
 
             # Embed 1: Bảng 4 Gói Dịch Vụ
             e1 = discord.Embed(
-                title="📚 SỔ TAY GÓI THÀNH VIÊN & NỀN TẢNG HYPERHUB AI GENERATOR",
+                title="📚 SỔ TAY GÓI THÀNH VIÊN & NỀN TẢNG ORBIT AI GENERATOR",
                 description=(
                     "Hệ thống tạo đề thi, bài tập và tài liệu học tập tự động ứng dụng chuỗi AI tiên tiến.\n"
                     "Cơ chế tự động kích hoạt gói dựa trên **Role Discord** do Ban Quản Trị cấp trực tiếp."
@@ -133,7 +133,7 @@ class InfoBoardCog(commands.Cog, name="InfoBoard"):
             )
 
             e1.add_field(
-                name="🆓 Hyper Free • Gói Mặc Định Miễn Phí",
+                name="🆓 Orbit Free • Gói Mặc Định Miễn Phí",
                 value=(
                     "• **Hạn mức:** `200 Tokens/ngày` (Tự động làm mới lúc 00:00 UTC+7)\n"
                     "• **Quy mô:** Tối đa cấp **Dài** (8–12 trang)\n"
@@ -144,7 +144,7 @@ class InfoBoardCog(commands.Cog, name="InfoBoard"):
             )
 
             e1.add_field(
-                name="🟣 Hyper Pro • Gói Nâng Cao",
+                name="🟣 Orbit Pro • Gói Nâng Cao",
                 value=(
                     "• **Hạn mức:** `700 Tokens/ngày`\n"
                     "• **Quy mô:** Mở khóa cấp **To (>15 trang)** chuyên sâu\n"
@@ -155,7 +155,7 @@ class InfoBoardCog(commands.Cog, name="InfoBoard"):
             )
 
             e1.add_field(
-                name="👑 Hyper Ultra • Gói Cao Cấp Nhất",
+                name="👑 Orbit Ultra • Gói Cao Cấp Nhất",
                 value=(
                     "• **Hạn mức:** `2,800 Tokens/ngày` (Gấp 4 lần Gói Pro!)\n"
                     "• **Quy mô:** Không giới hạn số trang, mở full toàn bộ tính năng\n"
@@ -165,7 +165,7 @@ class InfoBoardCog(commands.Cog, name="InfoBoard"):
             )
 
             e1.add_field(
-                name="⚡ Hyper Elite • Đặc Quyền VVIP",
+                name="⚡ Orbit Elite • Đặc Quyền VVIP",
                 value=(
                     "• **Hạn mức:** `Vô hạn (∞) Tokens`\n"
                     "• **Đặc quyền:** VVIP Priority hàng đầu, tự do khai thác mọi tính năng\n"
@@ -242,7 +242,7 @@ class InfoBoardCog(commands.Cog, name="InfoBoard"):
                 ),
                 color=0x2ECC71,
             )
-            e3.set_footer(text="HyperHub AI Platform • Bấm nút bên dưới để kiểm tra số dư Token")
+            e3.set_footer(text="Orbit AI Platform • Bấm nút bên dưới để kiểm tra số dư Token")
 
             await channel.send(embeds=[e1, e2, e3], view=InfoBoardRefreshView())
             logger.info("Đã gửi thành công bộ 3 Embeds sổ tay thông tin tại #📄・info.")

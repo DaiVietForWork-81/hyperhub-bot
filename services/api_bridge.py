@@ -48,6 +48,8 @@ class BotAPIBridge:
         self._upload_rate_limits: dict[str, list[float]] = {}
         self._import_rate_limits: dict[str, list[float]] = {}
         self._general_rate_limits: dict[str, list[float]] = {}
+        self._doc_stats_cache: tuple[dict, float] | None = None
+        self._doc_min_id_cache: tuple[dict[str, tuple[int, int]], float] | None = None
         self.app = web.Application(
             client_max_size=30 * 1024 * 1024,  # Giới hạn an toàn 30 MB
             middlewares=[self._cors_middleware, self._rate_limit_middleware, self._auth_middleware],
@@ -55,6 +57,11 @@ class BotAPIBridge:
         self.runner: web.AppRunner | None = None
         self.site: web.TCPSite | None = None
         self._setup_routes()
+
+    def invalidate_doc_caches(self) -> None:
+        """Xóa cache tài liệu khi có nộp mới, sửa hoặc xóa để đảm bảo tính nhất quán tức thì."""
+        self._doc_stats_cache = None
+        self._doc_min_id_cache = None
 
     @web.middleware
     async def _rate_limit_middleware(self, request: web.Request, handler: Any) -> web.Response:
@@ -110,6 +117,25 @@ class BotAPIBridge:
             logger.error(f"Error verifying Discord token: {e}")
             return None
 
+    @staticmethod
+    def _is_valid_bot_api_secret(token: str) -> bool:
+        """Kiểm tra token có khớp với BOT_API_SECRET hợp lệ (chống timing attack, cấm secret mặc định lộ công khai)."""
+        if not token:
+            return False
+        configured = (getattr(settings, "BOT_API_SECRET", "") or "").strip()
+        insecure_keys = {
+            "hyperhub_bridge_secret_key_2026",
+            "secret",
+            "changeme",
+            "default_secret",
+            "admin",
+            "123456",
+        }
+        if not configured or len(configured) < 16 or configured.lower() in insecure_keys:
+            return False
+        import hmac
+        return hmac.compare_digest(token, configured)
+
     async def _verify_admin_access(self, request: web.Request) -> dict | None:
         """Xác thực quyền Quản trị viên (4 role Admin, Bot Owner, Guild Owner/Administrator).
         Điều kiện bắt buộc với token Discord OAuth2:
@@ -127,8 +153,8 @@ class BotAPIBridge:
         elif "X-Bot-Secret" in request.headers:
             token = request.headers["X-Bot-Secret"].strip()
 
-        # 1. Khóa bí mật BOT_API_SECRET luôn có toàn quyền quản trị cao nhất
-        if token and token == settings.BOT_API_SECRET:
+        # 1. Khóa bí mật BOT_API_SECRET luôn có toàn quyền quản trị cao nhất (chỉ chấp nhận secret an toàn)
+        if self._is_valid_bot_api_secret(token):
             return {
                 "is_admin": True,
                 "user_id": BOT_OWNER_ID,
@@ -307,9 +333,9 @@ class BotAPIBridge:
             elif "X-Bot-Secret" in request.headers:
                 token = request.headers["X-Bot-Secret"].strip()
 
-            if token != settings.BOT_API_SECRET:
+            if not self._is_valid_bot_api_secret(token):
                 return web.json_response(
-                    {"error": "Unauthorized", "message": "Sai mã khóa bí mật BOT_API_SECRET"},
+                    {"error": "Unauthorized", "message": "Sai mã khóa bí mật BOT_API_SECRET hoặc khóa không an toàn"},
                     status=401,
                 )
         return await handler(request)
@@ -324,6 +350,7 @@ class BotAPIBridge:
         self.app.router.add_post("/api/notify", self.handle_notify)
         self.app.router.add_post("/api/account/link", self.handle_account_link)
         self.app.router.add_get("/api/account/me", self.handle_account_me)
+        self.app.router.add_get("/api/skills", self.handle_get_skills)
         # Endpoints Kho Tài Liệu & Đề Thi
         self.app.router.add_get("/api/documents", self.handle_get_documents)
         self.app.router.add_get("/api/documents/stats", self.handle_document_stats)
@@ -370,6 +397,47 @@ class BotAPIBridge:
             "ping_ms": ping,
             "guilds_count": len(self.bot.guilds),
             "uptime_seconds": uptime,
+            "timestamp": int(time.time()),
+        })
+
+    async def handle_get_skills(self, request: web.Request) -> web.Response:
+        """GET /api/skills: Trả về thông tin hệ sinh thái Agent Skills & Lucian UX/UI 200 elements."""
+        skills_dir = os.path.join(os.path.dirname(BOT_BASE_DIR), "Skills")
+        lucian_prompt_dir = os.path.join(skills_dir, "lucian-uxui-prompt")
+        has_lucian = os.path.isdir(lucian_prompt_dir)
+
+        return web.json_response({
+            "status": "ok",
+            "skills_root": skills_dir,
+            "installed_packages": [
+                {
+                    "name": "lucian-uxui",
+                    "title": "Lucian UX/UI Prompt & CLI",
+                    "elements_count": 200,
+                    "categories_count": 14,
+                    "installed": has_lucian,
+                    "repo": "https://github.com/Seokwoooo/lucian-uxui-prompt",
+                },
+                {
+                    "name": "gsap-skills",
+                    "title": "GreenSock GSAP Skills",
+                    "installed": os.path.isdir(os.path.join(skills_dir, "gsap-skills")),
+                    "repo": "https://github.com/greensock/gsap-skills",
+                },
+                {
+                    "name": "agent-skills",
+                    "title": "Addy Osmani Agent Skills (UI Engineering & Security)",
+                    "installed": os.path.isdir(os.path.join(skills_dir, "agent-skills")),
+                    "repo": "https://github.com/addyosmani/agent-skills",
+                },
+                {
+                    "name": "web-quality-skills",
+                    "title": "Web Quality & Accessibility (a11y)",
+                    "installed": os.path.isdir(os.path.join(skills_dir, "web-quality-skills")),
+                    "repo": "https://github.com/addyosmani/web-quality-skills",
+                },
+            ],
+            "total_ecosystem_skills": 9893,
             "timestamp": int(time.time()),
         })
 
@@ -583,7 +651,7 @@ class BotAPIBridge:
 
         auth_header = request.headers.get("Authorization", "")
         token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else ""
-        if not token or token == settings.BOT_API_SECRET:
+        if not token or self._is_valid_bot_api_secret(token):
             return web.json_response({"error": "Yêu cầu Bearer token Discord OAuth2"}, status=401)
 
         user_data = await self._verify_discord_bearer_token(token)
@@ -635,7 +703,7 @@ class BotAPIBridge:
 
         auth_header = request.headers.get("Authorization", "")
         token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else ""
-        if not token or token == settings.BOT_API_SECRET:
+        if not token or self._is_valid_bot_api_secret(token):
             return web.json_response({"error": "Yêu cầu Bearer token Discord OAuth2"}, status=401)
 
         user_data = await self._verify_discord_bearer_token(token)
@@ -677,9 +745,9 @@ class BotAPIBridge:
         # 1. Ưu tiên khóa bí mật máy chủ
         auth_header = request.headers.get("Authorization", "")
         token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else ""
-        secret_ok = bool(token) and token == settings.BOT_API_SECRET
-        if "X-Bot-Secret" in request.headers and request.headers["X-Bot-Secret"].strip() == settings.BOT_API_SECRET:
-            secret_ok = True
+        secret_ok = self._is_valid_bot_api_secret(token)
+        if not secret_ok and "X-Bot-Secret" in request.headers:
+            secret_ok = self._is_valid_bot_api_secret(request.headers["X-Bot-Secret"].strip())
 
         admin_info = None
         if not secret_ok:
@@ -809,13 +877,18 @@ class BotAPIBridge:
         count_row = await self.bot.db.fetchone(count_sql, *params)
         total = count_row[0] if count_row else 0
 
-        # Map min_id và count cho từng hash / tên file để xác định bản gốc vs bản trùng
-        min_id_rows = await self.bot.db.fetchall("""
-            SELECT COALESCE(NULLIF(file_hash, ''), LOWER(file_name)), MIN(id), COUNT(*)
-            FROM documents_archive
-            GROUP BY COALESCE(NULLIF(file_hash, ''), LOWER(file_name))
-        """)
-        doc_stats_map = {r[0]: (r[1], r[2]) for r in min_id_rows if r[0]}
+        # Map min_id và count cho từng hash / tên file để xác định bản gốc vs bản trùng (Cache 60s)
+        now_ts = time.time()
+        if self._doc_min_id_cache and now_ts - self._doc_min_id_cache[1] < 60.0:
+            doc_stats_map = self._doc_min_id_cache[0]
+        else:
+            min_id_rows = await self.bot.db.fetchall("""
+                SELECT COALESCE(NULLIF(file_hash, ''), LOWER(file_name)), MIN(id), COUNT(*)
+                FROM documents_archive
+                GROUP BY COALESCE(NULLIF(file_hash, ''), LOWER(file_name))
+            """)
+            doc_stats_map = {r[0]: (r[1], r[2]) for r in min_id_rows if r[0]}
+            self._doc_min_id_cache = (doc_stats_map, now_ts)
 
         base_cols = (
             "id, subject, title, file_name, file_size_bytes, file_type, estimated_level,"
@@ -918,9 +991,13 @@ class BotAPIBridge:
         })
 
     async def handle_document_stats(self, request: web.Request) -> web.Response:
-        """GET /api/documents/stats: Thống kê kho tài liệu (Tổng số thực tế, đề độc bản & đề trùng)."""
+        """GET /api/documents/stats: Thống kê kho tài liệu (Tổng số thực tế, đề độc bản & đề trùng) có Cache 30s."""
         if not hasattr(self.bot, "db"):
             return web.json_response({"error": "Cơ sở dữ liệu chưa sẵn sàng"}, status=503)
+
+        now_ts = time.time()
+        if self._doc_stats_cache and now_ts - self._doc_stats_cache[1] < 30.0:
+            return web.json_response(self._doc_stats_cache[0])
 
         total_row = await self.bot.db.fetchone(
             "SELECT COUNT(*), COALESCE(SUM(file_size_bytes), 0) FROM documents_archive"
@@ -955,7 +1032,7 @@ class BotAPIBridge:
             for r in subject_rows
         ]
 
-        return web.json_response({
+        result_payload = {
             "success": True,
             "total_items": total_items,
             "total_real": total_items,
@@ -963,7 +1040,9 @@ class BotAPIBridge:
             "duplicate_items": duplicate_items,
             "total_bytes": total_bytes,
             "subjects": subjects,
-        })
+        }
+        self._doc_stats_cache = (result_payload, now_ts)
+        return web.json_response(result_payload)
 
     async def handle_request_exam(self, request: web.Request) -> web.Response:
         """GET /api/documents/request_exam: Lấy ngẫu nhiên 1 đề thi theo lớp, loại đề và mô tả."""
@@ -985,9 +1064,9 @@ class BotAPIBridge:
         # 2. BẮT BUỘC là thành viên Discord Server (kèm email đã xác minh)
         auth_header = request.headers.get("Authorization", "")
         token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else ""
-        secret_ok = bool(token) and token == settings.BOT_API_SECRET
-        if "X-Bot-Secret" in request.headers and request.headers["X-Bot-Secret"].strip() == settings.BOT_API_SECRET:
-            secret_ok = True
+        secret_ok = self._is_valid_bot_api_secret(token)
+        if not secret_ok and "X-Bot-Secret" in request.headers:
+            secret_ok = self._is_valid_bot_api_secret(request.headers["X-Bot-Secret"].strip())
 
         if not secret_ok:
             if not token:
@@ -1027,7 +1106,7 @@ class BotAPIBridge:
                 return web.json_response({
                     "success": False,
                     "error": "Chưa tham gia server",
-                    "message": "Bạn phải tham gia Discord Server HyperHub mới được lấy đề thi.",
+                    "message": "Bạn phải tham gia Discord Server Orbit mới được lấy đề thi.",
                     "reason": "not_member",
                     "guild_id": str(DISCORD_GUILD_ID),
                 }, status=403)
@@ -1434,7 +1513,7 @@ class BotAPIBridge:
 
         user_data = None
         is_bot_admin = False
-        if token == settings.BOT_API_SECRET:
+        if self._is_valid_bot_api_secret(token):
             is_bot_admin = True
             uploader_name = "Bot Administrator"
             uploader_id = 0
@@ -1819,6 +1898,7 @@ class BotAPIBridge:
         except Exception as te:
             logger.debug("Không thể đồng bộ đề lên Turso: %s", te)
 
+        self.invalidate_doc_caches()
         return web.json_response({
             "success": True,
             "id": doc_id,
@@ -1869,7 +1949,7 @@ class BotAPIBridge:
             token = request.headers["X-Bot-Secret"].strip()
 
         uploader_name = "Web User (Google Drive)"
-        if token != settings.BOT_API_SECRET:
+        if not self._is_valid_bot_api_secret(token):
             user_data = await self._verify_discord_bearer_token(token) if token else None
             if not user_data or not user_data.get("verified", False):
                 return web.json_response({
@@ -1937,7 +2017,7 @@ class BotAPIBridge:
             hints = {
                 "no_token": "Bạn chưa liên kết tài khoản Discord. Hãy đăng nhập bằng Discord trên Web.",
                 "unverified": "Tài khoản Discord của bạn chưa xác minh email. Hãy xác minh email rồi thử lại.",
-                "not_member": "Bạn chưa tham gia Discord Server HyperHub. Hãy vào server rồi thử lại.",
+                "not_member": "Bạn chưa tham gia Discord Server Orbit. Hãy vào server rồi thử lại.",
                 "not_admin": "Tài khoản của bạn không có role Quản trị (Owner / Co-Owner / Administrator / Moderator).",
             }
             logger.info(f"Admin check DENIED (reason={reason}) từ IP {request.remote}")
@@ -2669,6 +2749,7 @@ class BotAPIBridge:
 
         # 3. Xóa bản ghi trong CSDL (Trigger documents_fts sẽ tự xóa khỏi bảng tìm kiếm FTS5)
         await self.bot.db.execute("DELETE FROM documents_archive WHERE id = ?", doc_id)
+        self.invalidate_doc_caches()
         logger.info(f"Admin {admin_info.get('username')} đã xóa hoàn toàn đề thi #{doc_id} ('{doc_title}')")
 
         return web.json_response({
@@ -2735,7 +2816,7 @@ class BotAPIBridge:
                WHERE id = ?""",
             new_title, new_subject, new_level, new_notes, doc_id
         )
-
+        self.invalidate_doc_caches()
         logger.info(f"Admin {admin_info.get('username')} đã cập nhật đề thi #{doc_id}: '{new_title}', notes='{new_notes}'")
 
         return web.json_response({
