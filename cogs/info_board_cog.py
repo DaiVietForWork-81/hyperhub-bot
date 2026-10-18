@@ -21,7 +21,7 @@ from utils.logger import get_logger
 
 logger = get_logger("InfoBoardCog")
 
-INFO_CHANNEL_ID = getattr(settings, "INFO_CHANNEL_ID", 1550896576636129320)
+INFO_CHANNEL_ID = getattr(settings, "INFO_CHANNEL_ID", 1534148186942214226)
 
 
 class InfoBoardRefreshView(discord.ui.View):
@@ -29,6 +29,31 @@ class InfoBoardRefreshView(discord.ui.View):
 
     def __init__(self):
         super().__init__(timeout=None)
+        # Nút liên kết trực tiếp tới các nền tảng trong hệ sinh thái Orbit
+        self.add_item(
+            discord.ui.Button(
+                label="Truy Cập Orbit Web Hub",
+                url="https://hyperhub-one.vercel.app/",
+                style=discord.ButtonStyle.link,
+                emoji="🌐",
+            )
+        )
+        self.add_item(
+            discord.ui.Button(
+                label="Nhóm Messenger Orbit",
+                url="https://m.me/j/AbZngp-x0Ny92IWH/",
+                style=discord.ButtonStyle.link,
+                emoji="💬",
+            )
+        )
+        self.add_item(
+            discord.ui.Button(
+                label="Kho Tài Nguyên GitHub",
+                url="https://github.com/DaiVietForWork-81",
+                style=discord.ButtonStyle.link,
+                emoji="📂",
+            )
+        )
 
     @discord.ui.button(
         label="Kiểm Tra Token Của Bạn",
@@ -121,6 +146,30 @@ class InfoBoardCog(commands.Cog, name="InfoBoard"):
                             await msg.delete()
                         except Exception:
                             pass
+
+            # Embed 0: Giới Thiệu Thương Hiệu & Logo Mới Orbit
+            e0 = discord.Embed(
+                title="🌌 CHÀO MỪNG ĐẾN VỚI ORBIT • LEARN — GROW — CONNECT",
+                description=(
+                    "╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╮\n"
+                    "　🪐 **HỆ SINH THÁI HỌC TẬP & CÔNG NGHỆ ORBIT**\n"
+                    "　*Không Gian Tri Thức • Bứt Phá Giới Hạn • Kết Nối Vươn Xa*\n"
+                    "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯\n\n"
+                    "🌟 **Ý NGHĨA BIỂU TƯỢNG LOGO MỚI (ORBIT IDENTITY):**\n"
+                    "• 🌙 **Vầng Trăng Khuyết (The Crescent):** Đại diện cho hành trình tích lũy tri thức không ngừng nghỉ. Mỗi ngày học hỏi là một bước tiến để hoàn thiện bản thân.\n"
+                    "• 🪐 **Vòng Quỹ Đạo Đa Chiều (Orbital Ring):** Tượng trưng cho sự gắn kết cộng đồng, chu kỳ học tập tuần hoàn liên tục và khát vọng bứt phá trong kỷ nguyên công nghệ.\n"
+                    "• 🎨 **Gam Màu Cosmic Neon (Purple & Rose Magenta):** Sự kết hợp hài hòa giữa chiều sâu tư duy (Tím Vũ Trụ) và nhiệt huyết, sáng tạo tuổi trẻ (Hồng Phát Quang).\n\n"
+                    "🏛️ **4 TRỤ CỘT HỆ SINH THÁI TOÀN DIỆN:**\n"
+                    "• 🌐 **Orbit Web Hub:** Nền tảng học tập, tra cứu đề thi, bảng xếp hạng và dashboard cá nhân hóa: https://hyperhub-one.vercel.app/\n"
+                    "• 🤖 **Orbit AI Generator:** Chuỗi 3 mô hình AI (`Qwen 3.5:4B` ➔ `Gemma 3:4B` ➔ `Qwen 2.5:0.5B`) tạo đề thi chuẩn cấu trúc in ấn.\n"
+                    "• 📚 **Thư Viện Đề Thi Tự Động (Doc Intake):** Tự động quét mã hash SHA-256, nhận diện năm học, sở/trường ra đề và phân loại tài liệu vào kho lưu trữ.\n"
+                    "• 🏆 **Sàn Đấu Thuật Toán (Competitive Hub):** Thi đấu 1:1, xếp hạng Codeforces và rèn luyện kỹ năng giải quyết bài toán Olympic."
+                ),
+                color=0xA855F7,
+            )
+            e0.set_thumbnail(url="https://hyperhub-one.vercel.app/server_icon.png")
+            e0.set_image(url="https://hyperhub-one.vercel.app/orbit_full.png")
+            e0.set_footer(text="Orbit Community • Your Space • Your Growth • Your Orbit")
 
             # Embed 1: Bảng 4 Gói Dịch Vụ
             e1 = discord.Embed(
@@ -244,8 +293,8 @@ class InfoBoardCog(commands.Cog, name="InfoBoard"):
             )
             e3.set_footer(text="Orbit AI Platform • Bấm nút bên dưới để kiểm tra số dư Token")
 
-            await channel.send(embeds=[e1, e2, e3], view=InfoBoardRefreshView())
-            logger.info("Đã gửi thành công bộ 3 Embeds sổ tay thông tin tại #📄・info.")
+            await channel.send(embeds=[e0, e1, e2, e3], view=InfoBoardRefreshView())
+            logger.info("Đã gửi thành công bộ 4 Embeds sổ tay thông tin và giới thiệu Orbit tại #📄・info.")
         except Exception as e:
             logger.error(f"Lỗi khi gửi bảng thông tin: {e}")
 

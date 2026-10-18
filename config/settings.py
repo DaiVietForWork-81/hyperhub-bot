@@ -83,8 +83,8 @@ if HAS_PYDANTIC:
             description="Kênh #📄・generate (Bảng điều khiển & Ticket tạo đề AI)",
         )
         INFO_CHANNEL_ID: int = Field(
-            default=1550896576636129320,
-            description="Kênh #📄・info (Sổ tay hướng dẫn & bảng giá Gói Hyper)",
+            default=1534148186942214226,
+            description="Kênh #📄・info (Sổ tay hướng dẫn & bảng thông tin Orbit)",
         )
         DATABASE_ARCHIVE_CHANNEL_ID: int = Field(
             default=1548627763467128912,
@@ -518,7 +518,7 @@ else:
                 os.environ.get("GENERATE_CHANNEL_ID", "1550896415046377615") or "1550896415046377615"
             )
             self.INFO_CHANNEL_ID = int(
-                os.environ.get("INFO_CHANNEL_ID", "1550896576636129320") or "1550896576636129320"
+                os.environ.get("INFO_CHANNEL_ID", "1534148186942214226") or "1534148186942214226"
             )
             self.DATABASE_ARCHIVE_CHANNEL_ID = int(
                 os.environ.get("DATABASE_ARCHIVE_CHANNEL_ID", "1548627763467128912") or "1548627763467128912"
