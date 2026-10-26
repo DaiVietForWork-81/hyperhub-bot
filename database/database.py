@@ -278,6 +278,26 @@ class Database:
         except Exception:
             pass
         try:
+            await self._conn.execute("ALTER TABLE documents_archive ADD COLUMN content_hash TEXT")
+        except Exception:
+            pass
+        try:
+            await self._conn.execute("ALTER TABLE documents_archive ADD COLUMN quorum_status TEXT")
+        except Exception:
+            pass
+        try:
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_doc_archive_content_hash ON documents_archive (content_hash)"
+            )
+        except Exception:
+            pass
+        try:
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_doc_archive_hash ON documents_archive (file_hash)"
+            )
+        except Exception:
+            pass
+        try:
             await self._conn.execute("ALTER TABLE documents_archive ADD COLUMN raw_text TEXT")
         except Exception:
             pass

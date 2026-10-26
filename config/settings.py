@@ -12,11 +12,13 @@ except ImportError:
     BaseSettings = object
 
 
+_BOT_ROOT_ENV = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+
 if HAS_PYDANTIC:
 
     class Settings(BaseSettings):
         model_config = SettingsConfigDict(
-            env_file=".env",
+            env_file=(_BOT_ROOT_ENV, ".env"),
             env_file_encoding="utf-8",
             extra="ignore",
         )

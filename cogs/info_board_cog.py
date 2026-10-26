@@ -33,7 +33,7 @@ class InfoBoardRefreshView(discord.ui.View):
         self.add_item(
             discord.ui.Button(
                 label="Truy Cập Orbit Web Hub",
-                url="https://hyperhub-one.vercel.app/",
+                url="https://orbit-psi-black.vercel.app/",
                 style=discord.ButtonStyle.link,
                 emoji="🌐",
             )
@@ -132,44 +132,50 @@ class InfoBoardCog(commands.Cog, name="InfoBoard"):
             return
 
         try:
-            if not force:
-                async for msg in channel.history(limit=15):
-                    if msg.author.id == self.bot.user.id and msg.embeds:
-                        if "SỔ TAY GÓI THÀNH VIÊN" in (msg.embeds[0].title or ""):
-                            return  # Đã có bảng thông tin
+            bot_msgs: list[discord.Message] = []
+            async for msg in channel.history(limit=20):
+                if self.bot.user and msg.author.id == self.bot.user.id:
+                    bot_msgs.append(msg)
 
-            # Xóa các tin nhắn cũ nếu force
+            # Xóa toàn bộ tin nhắn cũ nếu force, hoặc xóa các bản bị trùng lặp thừa (chỉ giữ lại 1 tin nhắn mới nhất để edit)
+            existing_msg: Optional[discord.Message] = None
             if force:
-                async for msg in channel.history(limit=10):
-                    if msg.author.id == self.bot.user.id:
-                        try:
-                            await msg.delete()
-                        except Exception:
-                            pass
+                for m in bot_msgs:
+                    try:
+                        await m.delete()
+                    except Exception:
+                        pass
+            elif bot_msgs:
+                existing_msg = bot_msgs[0]
+                for extra_m in bot_msgs[1:]:
+                    try:
+                        await extra_m.delete()
+                    except Exception:
+                        pass
 
             # Embed 0: Giới Thiệu Thương Hiệu & Logo Mới Orbit
             e0 = discord.Embed(
-                title="🌌 CHÀO MỪNG ĐẾN VỚI ORBIT • LEARN — GROW — CONNECT",
+                title="🌌 CHÀO MỪNG ĐẾN VỚI ORBIT • LEARN — CHILL — STUDY",
                 description=(
                     "╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╮\n"
                     "　🪐 **HỆ SINH THÁI HỌC TẬP & CÔNG NGHỆ ORBIT**\n"
-                    "　*Không Gian Tri Thức • Bứt Phá Giới Hạn • Kết Nối Vươn Xa*\n"
+                    "　*Không Gian Học Tập • Thư Giãn Tập Trung • Ôn Luyện Hiệu Quả (Learn • Chill • Study)*\n"
                     "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯\n\n"
                     "🌟 **Ý NGHĨA BIỂU TƯỢNG LOGO MỚI (ORBIT IDENTITY):**\n"
                     "• 🌙 **Vầng Trăng Khuyết (The Crescent):** Đại diện cho hành trình tích lũy tri thức không ngừng nghỉ. Mỗi ngày học hỏi là một bước tiến để hoàn thiện bản thân.\n"
                     "• 🪐 **Vòng Quỹ Đạo Đa Chiều (Orbital Ring):** Tượng trưng cho sự gắn kết cộng đồng, chu kỳ học tập tuần hoàn liên tục và khát vọng bứt phá trong kỷ nguyên công nghệ.\n"
                     "• 🎨 **Gam Màu Cosmic Neon (Purple & Rose Magenta):** Sự kết hợp hài hòa giữa chiều sâu tư duy (Tím Vũ Trụ) và nhiệt huyết, sáng tạo tuổi trẻ (Hồng Phát Quang).\n\n"
                     "🏛️ **4 TRỤ CỘT HỆ SINH THÁI TOÀN DIỆN:**\n"
-                    "• 🌐 **Orbit Web Hub:** Nền tảng học tập, tra cứu đề thi, bảng xếp hạng và dashboard cá nhân hóa: https://hyperhub-one.vercel.app/\n"
+                    "• 🌐 **Orbit Web Hub:** Nền tảng học tập, tra cứu đề thi, bảng xếp hạng và dashboard cá nhân hóa: https://orbit-psi-black.vercel.app/\n"
                     "• 🤖 **Orbit AI Generator:** Chuỗi 3 mô hình AI (`Qwen 3.5:4B` ➔ `Gemma 3:4B` ➔ `Qwen 2.5:0.5B`) tạo đề thi chuẩn cấu trúc in ấn.\n"
                     "• 📚 **Thư Viện Đề Thi Tự Động (Doc Intake):** Tự động quét mã hash SHA-256, nhận diện năm học, sở/trường ra đề và phân loại tài liệu vào kho lưu trữ.\n"
                     "• 🏆 **Sàn Đấu Thuật Toán (Competitive Hub):** Thi đấu 1:1, xếp hạng Codeforces và rèn luyện kỹ năng giải quyết bài toán Olympic."
                 ),
                 color=0xA855F7,
             )
-            e0.set_thumbnail(url="https://hyperhub-one.vercel.app/server_icon.png")
-            e0.set_image(url="https://hyperhub-one.vercel.app/orbit_full.png")
-            e0.set_footer(text="Orbit Community • Your Space • Your Growth • Your Orbit")
+            e0.set_thumbnail(url="https://orbit-psi-black.vercel.app/server_icon.png")
+            e0.set_image(url="https://orbit-psi-black.vercel.app/orbit_full.png")
+            e0.set_footer(text="Orbit Community • Learn • Chill • Study")
 
             # Embed 1: Bảng 4 Gói Dịch Vụ
             e1 = discord.Embed(
@@ -293,8 +299,12 @@ class InfoBoardCog(commands.Cog, name="InfoBoard"):
             )
             e3.set_footer(text="Orbit AI Platform • Bấm nút bên dưới để kiểm tra số dư Token")
 
-            await channel.send(embeds=[e0, e1, e2, e3], view=InfoBoardRefreshView())
-            logger.info("Đã gửi thành công bộ 4 Embeds sổ tay thông tin và giới thiệu Orbit tại #📄・info.")
+            if existing_msg is not None and not force:
+                await existing_msg.edit(embeds=[e0, e1, e2, e3], view=InfoBoardRefreshView())
+                logger.info("Đã cập nhật đồng bộ bộ 4 Embeds sổ tay thông tin Orbit tại #📄・info.")
+            else:
+                await channel.send(embeds=[e0, e1, e2, e3], view=InfoBoardRefreshView())
+                logger.info("Đã gửi thành công bộ 4 Embeds sổ tay thông tin và giới thiệu Orbit tại #📄・info.")
         except Exception as e:
             logger.error(f"Lỗi khi gửi bảng thông tin: {e}")
 

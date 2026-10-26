@@ -282,7 +282,7 @@ ERROR_COLOR = 0xF87171
 WARN_COLOR = 0xFBBF24
 INFO_COLOR = 0x3B82F6
 
-FOOTER_TEXT = "🌌 HYPERHUB MUSIC • LEARN • CHILL • CONNECT"
+FOOTER_TEXT = "🌌 ORBIT • LEARN • CHILL • STUDY"
 DIVIDER = "━" * 16
 
 _THEME_COLOR = HYPERHUB_COLOR
@@ -416,7 +416,7 @@ def warning(message: str, title: str = "⚠️ Cảnh báo") -> discord.Embed:
     return base_embed(title=title, description=message, color=WARN_COLOR)
 
 
-def info(message: str, title: str = "🌌 HyperHub Music") -> discord.Embed:
+def info(message: str, title: str = "🌌 Orbit • Learn • Chill • Study") -> discord.Embed:
     return base_embed(title=title, description=message)
 
 

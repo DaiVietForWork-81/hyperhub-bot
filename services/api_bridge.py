@@ -1764,6 +1764,25 @@ class BotAPIBridge:
                     if hasattr(report, "pass1") and report.pass1:
                         question_count = getattr(report.pass1, "question_count", 0)
                         page_count = getattr(report.pass1, "page_count", 1)
+
+                    # Layer 2: Kiểm tra trùng nội dung đề thi (Content Hash)
+                    content_hash = getattr(report, "content_hash", None)
+                    if content_hash and hasattr(self.bot, "db"):
+                        existing_content = await self.bot.db.fetchone(
+                            "SELECT id, title, author_name, timestamp, jump_url FROM documents_archive WHERE content_hash = ? LIMIT 1",
+                            content_hash,
+                        )
+                        if existing_content:
+                            return web.json_response({
+                                "success": False,
+                                "is_duplicate": True,
+                                "match_type": "CONTENT_EXACT",
+                                "message": f"Nội dung đề thi hoàn toàn trùng khớp với đề '{existing_content[1]}' do '{existing_content[2]}' nộp vào {existing_content[3]}!",
+                                "existing_id": existing_content[0],
+                                "existing_title": existing_content[1],
+                                "file_hash": file_hash,
+                                "content_hash": content_hash,
+                            })
             except Exception as e:
                 logger.warning(f"Lỗi khi chạy DocInspector: {e}")
 
@@ -1799,7 +1818,7 @@ class BotAPIBridge:
                 uploader_name,
                 0,
                 0,
-                "https://hyperhub-one.vercel.app/#vault",
+                "https://orbit-psi-black.vercel.app/#vault",
                 now_iso,
                 file_hash,
                 raw_text_summary[:50000] if raw_text_summary else "",
@@ -1833,7 +1852,7 @@ class BotAPIBridge:
                 uploader_name,
                 0,
                 0,
-                "https://hyperhub-one.vercel.app/#vault",
+                "https://orbit-psi-black.vercel.app/#vault",
                 now_iso,
                 file_hash,
                 raw_text_summary[:50000] if raw_text_summary else "",
@@ -1884,7 +1903,7 @@ class BotAPIBridge:
                     turso_sql,
                     detected_subject, file_name, file_name, len(file_bytes), file_ext,
                     detected_grade, question_count, page_count, uploader_id,
-                    uploader_name, 0, 0, "https://hyperhub-one.vercel.app/#vault", now_iso,
+                    uploader_name, 0, 0, "https://orbit-psi-black.vercel.app/#vault", now_iso,
                     file_hash, raw_text_summary[:50000] if raw_text_summary else "",
                     raw_text_summary, academic_year, school_name,
                     "XAC_MINH", exam_type_str, confidence,
@@ -1916,6 +1935,9 @@ class BotAPIBridge:
             "school_or_department": school_name,
             "summary": raw_text_summary,
             "file_hash": file_hash,
+            "content_hash": getattr(report, "content_hash", None) if "report" in locals() and report else None,
+            "quorum": getattr(report, "quorum_arbitration", None) if "report" in locals() and report else None,
+            "draft_dossier_markdown": getattr(report, "draft_dossier_markdown", None) if "report" in locals() and report else None,
             "moet_2025_compliant": bool(moet_2025_compliant),
             "moet_part1_count": moet_part1_count,
             "moet_part2_count": moet_part2_count,
@@ -2020,7 +2042,10 @@ class BotAPIBridge:
                 "not_member": "Bạn chưa tham gia Discord Server Orbit. Hãy vào server rồi thử lại.",
                 "not_admin": "Tài khoản của bạn không có role Quản trị (Owner / Co-Owner / Administrator / Moderator).",
             }
-            logger.info(f"Admin check DENIED (reason={reason}) từ IP {request.remote}")
+            if reason == "no_token":
+                logger.debug(f"Admin check skipped (reason=no_token) từ IP {request.remote}")
+            else:
+                logger.info(f"Admin check DENIED (reason={reason}) từ IP {request.remote}")
             return web.json_response({
                 "is_admin": False,
                 "reason": reason,
@@ -2749,6 +2774,12 @@ class BotAPIBridge:
 
         # 3. Xóa bản ghi trong CSDL (Trigger documents_fts sẽ tự xóa khỏi bảng tìm kiếm FTS5)
         await self.bot.db.execute("DELETE FROM documents_archive WHERE id = ?", doc_id)
+        try:
+            from database.turso_client import turso_db
+            if turso_db.is_configured:
+                await turso_db.execute("DELETE FROM documents_archive WHERE id = ?", doc_id)
+        except Exception as te:
+            logger.debug(f"Không thể đồng bộ xóa đề #{doc_id} trên Turso Cloud: {te}")
         self.invalidate_doc_caches()
         logger.info(f"Admin {admin_info.get('username')} đã xóa hoàn toàn đề thi #{doc_id} ('{doc_title}')")
 
@@ -2816,6 +2847,17 @@ class BotAPIBridge:
                WHERE id = ?""",
             new_title, new_subject, new_level, new_notes, doc_id
         )
+        try:
+            from database.turso_client import turso_db
+            if turso_db.is_configured:
+                await turso_db.execute(
+                    """UPDATE documents_archive
+                       SET title = ?, subject = ?, estimated_level = ?, notes = ?
+                       WHERE id = ?""",
+                    new_title, new_subject, new_level, new_notes, doc_id
+                )
+        except Exception as te:
+            logger.debug(f"Không thể đồng bộ cập nhật đề #{doc_id} trên Turso Cloud: {te}")
         self.invalidate_doc_caches()
         logger.info(f"Admin {admin_info.get('username')} đã cập nhật đề thi #{doc_id}: '{new_title}', notes='{new_notes}'")
 
@@ -2958,9 +3000,239 @@ class BotAPIBridge:
         logger.info(
             f"🚀 Bot API Bridge đang hoạt động tại http://{settings.BOT_API_HOST}:{settings.BOT_API_PORT}"
         )
+        # Khởi chạy cầu nối 2 chiều trực tiếp với Vercel qua Turso Cloud (Zero-ngrok / Zero-Cloudflare)
+        self._turso_relay_task = asyncio.create_task(self._turso_relay_loop())
+
+    async def _init_turso_bridge_tables(self) -> None:
+        """Khởi tạo bảng lưu trạng thái thực thi (bot_kv_store) và hàng đợi RPC 2 chiều (bot_rpc_queue) trên Turso Cloud."""
+        from database.turso_client import turso_db
+        if not turso_db.is_configured:
+            return
+        await turso_db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bot_kv_store (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """
+        )
+        await turso_db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bot_rpc_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                method TEXT NOT NULL,
+                path TEXT NOT NULL,
+                headers TEXT,
+                body TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                response_status INTEGER DEFAULT 200,
+                response_body TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """
+        )
+        await turso_db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS linked_accounts (
+                discord_id INTEGER PRIMARY KEY,
+                username TEXT,
+                global_name TEXT,
+                avatar_url TEXT,
+                email TEXT,
+                verified INTEGER DEFAULT 0,
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                login_count INTEGER DEFAULT 1
+            )
+            """
+        )
+
+    async def _push_turso_telemetry_snapshot(self) -> None:
+        """Đồng bộ trạng thái Bot Online, Ping, danh sách Admin/Member và dữ liệu Admin Console lên Turso Cloud cho Vercel."""
+        import json as _json
+        import aiohttp as _aiohttp
+        from database.turso_client import turso_db
+        if not turso_db.is_configured:
+            return
+
+        now_ts = int(time.time())
+        uptime = int(now_ts - START_TIME)
+        ping = round(self.bot.latency * 1000, 2) if hasattr(self.bot, "latency") and self.bot.latency == self.bot.latency else 0.0
+
+        status_payload = {
+            "status": "online",
+            "bot_user": str(self.bot.user) if self.bot.user else "Orbit Bot",
+            "bot_id": self.bot.user.id if self.bot.user else 0,
+            "ping_ms": ping,
+            "guilds_count": len(self.bot.guilds) if hasattr(self.bot, "guilds") else 1,
+            "uptime_seconds": uptime,
+            "timestamp": now_ts,
+            "bridge_mode": "vercel_turso_direct",
+        }
+        await turso_db.execute(
+            """INSERT INTO bot_kv_store (key, value, updated_at) VALUES ('status', ?, ?)
+               ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
+            _json.dumps(status_payload, ensure_ascii=False),
+            now_ts,
+        )
+
+        # Đồng bộ danh sách Admin & Member IDs để Vercel xác thực /api/admin/check và /api/documents/request_exam tức thì
+        guild = self.bot.get_guild(DISCORD_GUILD_ID) or (self.bot.guilds[0] if getattr(self.bot, "guilds", None) else None)
+        if guild:
+            admins_map: dict[str, dict[str, Any]] = {}
+            member_ids: list[str] = []
+            for m in guild.members:
+                uid_str = str(m.id)
+                member_ids.append(uid_str)
+                role_ids = {r.id for r in getattr(m, "roles", [])}
+                is_owner = (m.id == BOT_OWNER_ID) or (settings.OWNER_ID and m.id == settings.OWNER_ID) or (guild.owner_id == m.id)
+                is_adm = is_owner or getattr(m.guild_permissions, "administrator", False) or bool(role_ids.intersection(ADMIN_ROLE_IDS))
+                if is_adm:
+                    admins_map[uid_str] = {
+                        "is_admin": True,
+                        "user_id": m.id,
+                        "username": m.name,
+                        "display_name": m.display_name,
+                        "role_name": "👑 Owner" if is_owner else (m.top_role.name if getattr(m, "top_role", None) else "⚡ Administrator"),
+                    }
+            access_payload = {
+                "guild_id": str(guild.id),
+                "guild_name": guild.name,
+                "member_count": guild.member_count or len(member_ids),
+                "admins": admins_map,
+                "member_ids": member_ids[:5000],
+                "updated_at": now_ts,
+            }
+            await turso_db.execute(
+                """INSERT INTO bot_kv_store (key, value, updated_at) VALUES ('guild_access', ?, ?)
+                   ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
+                _json.dumps(access_payload, ensure_ascii=False),
+                now_ts,
+            )
+
+        # Đồng bộ snapshot các endpoint Admin Console từ local HTTP server lên Turso Cloud
+        secret = (getattr(settings, "BOT_API_SECRET", "") or "").strip()
+        if not secret:
+            return
+        local_base = f"http://127.0.0.1:{settings.BOT_API_PORT}"
+        headers = {"X-Bot-Secret": secret}
+        snapshot_routes = [
+            ("admin_channels", "/api/admin/channels"),
+            ("admin_members", "/api/admin/members?limit=50"),
+            ("admin_bans", "/api/admin/bans"),
+            ("admin_logs", "/api/admin/logs?lines=200&level=ALL"),
+            ("admin_config", "/api/admin/config"),
+            ("admin_audit_logs", "/api/admin/audit-logs"),
+            ("system_update_status", "/api/system/update_status"),
+        ]
+        async with _aiohttp.ClientSession(timeout=_aiohttp.ClientTimeout(total=5.0)) as sess:
+            for kv_key, route in snapshot_routes:
+                try:
+                    async with sess.get(f"{local_base}{route}", headers=headers) as resp:
+                        if resp.status == 200:
+                            text_val = await resp.text()
+                            await turso_db.execute(
+                                """INSERT INTO bot_kv_store (key, value, updated_at) VALUES (?, ?, ?)
+                                   ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
+                                kv_key,
+                                text_val,
+                                now_ts,
+                            )
+                except Exception:
+                    pass
+
+    async def _process_turso_rpc_queue(self) -> None:
+        """Xử lý các yêu cầu tương tác thời gian thực từ Vercel gửi qua bảng bot_rpc_queue trên Turso Cloud."""
+        import json as _json
+        import aiohttp as _aiohttp
+        from database.turso_client import turso_db
+        if not turso_db.is_configured:
+            return
+
+        rows = await turso_db.fetchall(
+            "SELECT id, method, path, headers, body FROM bot_rpc_queue WHERE status = 'pending' ORDER BY id ASC LIMIT 5"
+        )
+        if not rows:
+            return
+
+        local_base = f"http://127.0.0.1:{settings.BOT_API_PORT}"
+        secret = (getattr(settings, "BOT_API_SECRET", "") or "").strip()
+
+        async with _aiohttp.ClientSession(timeout=_aiohttp.ClientTimeout(total=25.0)) as sess:
+            for r in rows:
+                rpc_id = r.get("id")
+                method = (r.get("method") or "POST").upper()
+                path = r.get("path") or "/api/status"
+                raw_headers = r.get("headers") or "{}"
+                raw_body = r.get("body") or ""
+
+                try:
+                    req_headers = _json.loads(raw_headers) if raw_headers else {}
+                except Exception:
+                    req_headers = {}
+
+                # Nếu Vercel đã xác thực quyền Admin/Secret, gắn X-Bot-Secret để thực thi nội bộ
+                if req_headers.get("X-Vercel-Verified-Admin") == "1" and secret:
+                    req_headers["X-Bot-Secret"] = secret
+                req_headers["Content-Type"] = req_headers.get("Content-Type", "application/json")
+
+                resp_status = 500
+                resp_text = '{"error":"Internal RPC Error"}'
+                try:
+                    async with sess.request(
+                        method,
+                        f"{local_base}{path}",
+                        headers=req_headers,
+                        data=raw_body.encode("utf-8") if raw_body else None,
+                    ) as resp:
+                        resp_status = resp.status
+                        resp_text = await resp.text()
+                except Exception as exc:
+                    resp_status = 502
+                    resp_text = _json.dumps({"error": f"Bot RPC execution error: {exc}"}, ensure_ascii=False)
+
+                await turso_db.execute(
+                    """UPDATE bot_rpc_queue
+                       SET status = 'done', response_status = ?, response_body = ?, updated_at = ?
+                       WHERE id = ?""",
+                    resp_status,
+                    resp_text,
+                    int(time.time()),
+                    rpc_id,
+                )
+
+        # Dọn dẹp các lệnh RPC cũ hơn 10 phút để tiết kiệm dung lượng Turso
+        await turso_db.execute("DELETE FROM bot_rpc_queue WHERE created_at < ?", int(time.time()) - 600)
+
+    async def _turso_relay_loop(self) -> None:
+        """Vòng lặp nền đồng bộ 2 chiều giữa Bot và Vercel thông qua Turso Cloud."""
+        await self.bot.wait_until_ready()
+        try:
+            await self._init_turso_bridge_tables()
+            logger.info("🌐 Đã kích hoạt cầu nối trực tiếp Bot <-> Vercel qua Turso Cloud (Zero-ngrok)!")
+        except Exception as e:
+            logger.warning(f"Lỗi khởi tạo bảng cầu nối Turso: {e}")
+
+        last_snapshot = 0.0
+        while not self.bot.is_closed():
+            try:
+                now = time.monotonic()
+                if now - last_snapshot >= 20.0:
+                    await self._push_turso_telemetry_snapshot()
+                    last_snapshot = now
+                await self._process_turso_rpc_queue()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.debug(f"Lỗi vòng lặp Turso Relay: {e}")
+            await asyncio.sleep(2.5)
 
     async def stop(self) -> None:
         """Dừng HTTP Server an toàn."""
+        if getattr(self, "_turso_relay_task", None) and not self._turso_relay_task.done():
+            self._turso_relay_task.cancel()
         if self.runner:
             await self.runner.cleanup()
             logger.info("Đã dừng Bot API Bridge.")

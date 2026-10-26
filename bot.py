@@ -404,9 +404,18 @@ class CompetitiveProgrammingBot(commands.Bot):
         # Thiết lập trạng thái hoạt động trực quan
         activity = discord.Activity(
             type=discord.ActivityType.watching,
-            name="Orbit • Different paths. One orbit.",
+            name="Orbit • Learn • Chill • Study",
         )
         await self.change_presence(status=discord.Status.online, activity=activity)
+
+        # Tự động đồng bộ tên Máy chủ Discord sang "Orbit | Learn • Chill • Study" nếu vẫn mang tagline cũ
+        for g in self.guilds:
+            try:
+                if "Orbit" in g.name and "Grow" in g.name:
+                    await g.edit(name="Orbit | Learn • Chill • Study", reason="Đồng bộ thương hiệu Orbit | Learn • Chill • Study")
+                    logger.info(f"✨ Đã đồng bộ tên máy chủ Discord thành: Orbit | Learn • Chill • Study ({g.id})")
+            except Exception as ge:
+                logger.debug(f"Không thể đổi tên guild {g.id}: {ge}")
 
         # Chặn lặp tác vụ khởi động khi bot reconnect Gateway (tránh spike CPU)
         if self._ready_initialized:

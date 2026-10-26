@@ -79,7 +79,7 @@ class StudyPracticeCog(commands.Cog, name="StudyPractice"):
 
     @app_commands.command(
         name="luyende",
-        description="🎯 Tính năng Luyện Đề & Thi Thử Trực Tuyến HyperHub (Dành cho học sinh)",
+        description="🎯 Tính năng Luyện Đề & Thi Thử Trực Tuyến Orbit • Learn • Chill • Study (Dành cho học sinh)",
     )
     @app_commands.describe(
         mon="Môn học muốn luyện tập",
@@ -123,7 +123,7 @@ class StudyPracticeCog(commands.Cog, name="StudyPractice"):
                 ),
                 color=0xA855F7,
             )
-            embed.set_footer(text="HyperHub Study Engine • Trạng thái: Chưa kích hoạt")
+            embed.set_footer(text="Orbit Study Engine • Learn • Chill • Study • Trạng thái: Chưa kích hoạt")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
