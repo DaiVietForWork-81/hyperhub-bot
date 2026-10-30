@@ -159,7 +159,7 @@ class InfoBoardCog(commands.Cog, name="InfoBoard"):
                 description=(
                     "╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╮\n"
                     "　🪐 **HỆ SINH THÁI HỌC TẬP & CÔNG NGHỆ ORBIT**\n"
-                    "　*Không Gian Học Tập • Thư Giãn Tập Trung • Ôn Luyện Hiệu Quả (Learn • Chill • Study)*\n"
+                    "　*Không Gian Học Tập • Thư Giãn Tập Trung • Ôn Luyện Hiệu Quả (Vietnam)*\n"
                     "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯\n\n"
                     "🌟 **Ý NGHĨA BIỂU TƯỢNG LOGO MỚI (ORBIT IDENTITY):**\n"
                     "• 🌙 **Vầng Trăng Khuyết (The Crescent):** Đại diện cho hành trình tích lũy tri thức không ngừng nghỉ. Mỗi ngày học hỏi là một bước tiến để hoàn thiện bản thân.\n"
@@ -175,7 +175,7 @@ class InfoBoardCog(commands.Cog, name="InfoBoard"):
             )
             e0.set_thumbnail(url="https://orbit-psi-black.vercel.app/server_icon.png")
             e0.set_image(url="https://orbit-psi-black.vercel.app/orbit_full.png")
-            e0.set_footer(text="Orbit Community • Learn • Chill • Study")
+            e0.set_footer(text="Orbit Community | Vietnam")
 
             # Embed 1: Bảng 4 Gói Dịch Vụ
             e1 = discord.Embed(

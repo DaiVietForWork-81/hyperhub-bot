@@ -212,7 +212,7 @@ class SystemSyncService:
 
         if git_info.get("commit_msg"):
             embed.set_footer(
-                text=f"Git commit: {git_info['commit_msg']} • Orbit • Learn • Chill • Study",
+                text=f"Git commit: {git_info['commit_msg']} • Orbit | Vietnam",
                 icon_url=bot.user.display_avatar.url if bot.user else None,
             )
 

@@ -464,6 +464,32 @@ class Database:
             """
         )
 
+        # Bảng đồng bộ Hồ sơ Học thuật, Chuỗi ngày học (Study Streak) & XP giữa Discord Bot và Web Hub
+        await self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS study_profiles (
+                discord_id INTEGER PRIMARY KEY,
+                username TEXT,
+                display_name TEXT,
+                avatar_url TEXT,
+                current_streak INTEGER DEFAULT 0,
+                max_streak INTEGER DEFAULT 0,
+                last_study_date TEXT DEFAULT '',
+                study_xp INTEGER DEFAULT 0,
+                pomodoro_count INTEGER DEFAULT 0,
+                study_minutes INTEGER DEFAULT 0,
+                exams_completed INTEGER DEFAULT 0,
+                docs_contributed INTEGER DEFAULT 0,
+                dream_school TEXT DEFAULT '',
+                dream_score TEXT DEFAULT '',
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        await self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_study_profiles_xp ON study_profiles (study_xp DESC, current_streak DESC)"
+        )
+
     async def execute(self, sql: str, *params) -> None:
         await self.connection.execute(sql, params)
         await self.connection.commit()

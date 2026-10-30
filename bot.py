@@ -113,6 +113,7 @@ COMMAND_ALLOWLIST = {
     "kick", "ban", "unban", "mute", "unmute", "reset",
     "warn", "deletewarn", "warntest",
     "timde", "layde", "timtailieu", "dongbokhode", "gothailieu",
+    "luyende", "chuoi",
 }
 
 
@@ -404,16 +405,16 @@ class CompetitiveProgrammingBot(commands.Bot):
         # Thiết lập trạng thái hoạt động trực quan
         activity = discord.Activity(
             type=discord.ActivityType.watching,
-            name="Orbit • Learn • Chill • Study",
+            name="Orbit | Vietnam",
         )
         await self.change_presence(status=discord.Status.online, activity=activity)
 
-        # Tự động đồng bộ tên Máy chủ Discord sang "Orbit | Learn • Chill • Study" nếu vẫn mang tagline cũ
+        # Tự động đồng bộ tên Máy chủ Discord sang "Orbit | Vietnam" nếu vẫn mang tagline cũ
         for g in self.guilds:
             try:
-                if "Orbit" in g.name and "Grow" in g.name:
-                    await g.edit(name="Orbit | Learn • Chill • Study", reason="Đồng bộ thương hiệu Orbit | Learn • Chill • Study")
-                    logger.info(f"✨ Đã đồng bộ tên máy chủ Discord thành: Orbit | Learn • Chill • Study ({g.id})")
+                if "Orbit" in g.name and g.name != "Orbit | Vietnam":
+                    await g.edit(name="Orbit | Vietnam", reason="Đồng bộ thương hiệu Orbit | Vietnam")
+                    logger.info(f"✨ Đã đồng bộ tên máy chủ Discord thành: Orbit | Vietnam ({g.id})")
             except Exception as ge:
                 logger.debug(f"Không thể đổi tên guild {g.id}: {ge}")
 

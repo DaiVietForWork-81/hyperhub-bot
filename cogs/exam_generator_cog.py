@@ -427,7 +427,7 @@ class ExamGeneratorCog(commands.Cog, name="ExamGenerator"):
 
     exam_group = app_commands.Group(
         name="exam",
-        description="Bộ công cụ khảo thí và đề thi AI Orbit • Learn • Chill • Study",
+        description="Bộ công cụ khảo thí và đề thi AI Orbit | Vietnam",
     )
 
     def __init__(self, bot: commands.Bot):
@@ -477,7 +477,7 @@ class ExamGeneratorCog(commands.Cog, name="ExamGenerator"):
                 inline=False,
             )
 
-        embed.set_footer(text="Orbit AI Exam Bank • Learn • Chill • Study")
+        embed.set_footer(text="Orbit AI Exam Bank | Vietnam")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     async def cog_load(self) -> None:
@@ -526,7 +526,7 @@ class ExamGeneratorCog(commands.Cog, name="ExamGenerator"):
                 ),
                 inline=False,
             )
-            embed.set_footer(text="Orbit • Learn • Chill • Study • /check để xem hạn mức của bạn")
+            embed.set_footer(text="Orbit | Vietnam • /check để xem hạn mức của bạn")
             await channel.send(embed=embed, view=GenerateControlPanelView(self.bot))
             logger.info("Đã gửi bảng điều khiển tạo đề mới tại #📄・generate.")
         except Exception as e:
