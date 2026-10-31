@@ -3976,6 +3976,72 @@ class BotAPIBridge:
                 except Exception:
                     pass
 
+            # Làm nóng sẵn (Pre-warm) tối đa 2 đề thi/chu kỳ lên Turso Cloud để Vercel đọc PDF & làm đề 24/7 khi tắt PC
+            try:
+                await self._prewarm_turso_documents_cache(sess, local_base)
+            except Exception as pw_err:
+                logger.debug(f"Pre-warm Turso documents cache skip: {pw_err}")
+
+    async def _prewarm_turso_documents_cache(self, sess: Any, local_base: str) -> None:
+        """Tự động đồng bộ ngầm link Discord CDN (doc_cdn_{id}) và raw_text của kho đề lên Turso Cloud theo từng lô nhỏ."""
+        from database.turso_client import turso_db
+        if not turso_db.is_configured or not hasattr(self.bot, "db") or not self.bot.db:
+            return
+
+        now_ts = time.time()
+        if not hasattr(self, "_prewarmed_doc_ids"):
+            self._prewarmed_doc_ids: set[int] = set()
+            self._last_prewarm_reset_ts: float = now_ts
+
+        # Làm mới lại link CDN mỗi 6 giờ (vì link Discord CDN có chữ ký hết hạn sau ~24h)
+        if now_ts - getattr(self, "_last_prewarm_reset_ts", 0.0) >= 21600:
+            self._prewarmed_doc_ids.clear()
+            self._last_prewarm_reset_ts = now_ts
+
+        rows = await self.bot.db.fetchall(
+            "SELECT id, raw_text, page_count FROM documents_archive ORDER BY id DESC LIMIT 120"
+        )
+        if not rows:
+            return
+
+        batch_count = 0
+        for r in rows:
+            doc_id = int(r[0])
+            if doc_id in self._prewarmed_doc_ids:
+                continue
+            raw_text = r[1] or ""
+            page_count = r[2] or 0
+
+            # 1. Phân giải và cache link CDN (doc_cdn_{id}) hoặc file_content_base64 lên Turso
+            try:
+                async with sess.get(f"{local_base}/api/documents/{doc_id}/file_url") as _:
+                    pass
+            except Exception:
+                pass
+
+            # 2. Nếu chưa có raw_text thì kích hoạt bóc tách 1 lần, nếu đã có thì đồng bộ sang Turso
+            if len(raw_text.strip()) < 60:
+                try:
+                    async with sess.get(f"{local_base}/api/documents/{doc_id}/content") as _:
+                        pass
+                except Exception:
+                    pass
+            else:
+                try:
+                    await turso_db.execute(
+                        "UPDATE documents_archive SET raw_text = ?, page_count = MAX(COALESCE(page_count, 0), ?) WHERE id = ? AND (raw_text IS NULL OR LENGTH(raw_text) < 60)",
+                        raw_text,
+                        page_count,
+                        doc_id,
+                    )
+                except Exception:
+                    pass
+
+            self._prewarmed_doc_ids.add(doc_id)
+            batch_count += 1
+            if batch_count >= 2:
+                break
+
     async def _process_turso_rpc_queue(self) -> None:
         """Xử lý các yêu cầu tương tác thời gian thực từ Vercel gửi qua bảng bot_rpc_queue trên Turso Cloud."""
         import json as _json

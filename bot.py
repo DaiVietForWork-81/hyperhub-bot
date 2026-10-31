@@ -409,14 +409,8 @@ class CompetitiveProgrammingBot(commands.Bot):
         )
         await self.change_presence(status=discord.Status.online, activity=activity)
 
-        # Tự động đồng bộ tên Máy chủ Discord sang "Orbit | Vietnam" nếu vẫn mang tagline cũ
-        for g in self.guilds:
-            try:
-                if "Orbit" in g.name and g.name != "Orbit | Vietnam":
-                    await g.edit(name="Orbit | Vietnam", reason="Đồng bộ thương hiệu Orbit | Vietnam")
-                    logger.info(f"✨ Đã đồng bộ tên máy chủ Discord thành: Orbit | Vietnam ({g.id})")
-            except Exception as ge:
-                logger.debug(f"Không thể đổi tên guild {g.id}: {ge}")
+        # Tự động đồng bộ tên Máy chủ Discord, Avatar Bot & Icon Server sang thương hiệu "Orbit | Vietnam"
+        asyncio.create_task(self._auto_sync_logo_and_branding())
 
         # Chặn lặp tác vụ khởi động khi bot reconnect Gateway (tránh spike CPU)
         if self._ready_initialized:
@@ -435,6 +429,55 @@ class CompetitiveProgrammingBot(commands.Bot):
 
         # [ARCHIVED] AI Worker sinh đề Ranked — đã lưu trữ tại archived/duel_arena/
         # asyncio.create_task(problem_worker.start(self))
+
+    async def _auto_sync_logo_and_branding(self) -> None:
+        """Tự động đồng bộ tên Server ('Orbit | Vietnam'), Avatar Bot và Icon Server từ LOGO_ID.png (1 lần theo SHA-256)."""
+        import hashlib
+        from pathlib import Path
+
+        for g in self.guilds:
+            try:
+                if ("Orbit" in g.name or g.id == 1532265330079174697) and g.name != "Orbit | Vietnam":
+                    await g.edit(name="Orbit | Vietnam", reason="Đồng bộ thương hiệu Orbit | Vietnam")
+                    logger.info(f"✨ Đã đồng bộ tên máy chủ Discord thành: Orbit | Vietnam ({g.id})")
+            except Exception as ge:
+                logger.debug(f"Không thể đổi tên guild {g.id}: {ge}")
+
+        bot_dir = Path(__file__).resolve().parent
+        logo_path = bot_dir / "LOGO_ID.png"
+        hash_file = bot_dir / ".logo_synced_hash"
+        if not logo_path.exists():
+            return
+
+        try:
+            logo_bytes = logo_path.read_bytes()
+            current_hash = hashlib.sha256(logo_bytes).hexdigest()
+            synced_hash = hash_file.read_text(encoding="utf-8").strip() if hash_file.exists() else ""
+            if current_hash == synced_hash:
+                return
+
+            updated_any = False
+            if self.user:
+                try:
+                    await self.user.edit(avatar=logo_bytes)
+                    logger.info("🎨 Đã tự động cập nhật Avatar Bot Discord sang LOGO_ID.png mới!")
+                    updated_any = True
+                except Exception as av_err:
+                    logger.warning(f"Không thể cập nhật Avatar Bot (có thể do giới hạn tần suất Discord): {av_err}")
+
+            for g in self.guilds:
+                if "Orbit" in g.name or g.id == 1532265330079174697:
+                    try:
+                        await g.edit(icon=logo_bytes, reason="Đồng bộ logo mới Orbit | Vietnam")
+                        logger.info(f"🎨 Đã tự động cập nhật Icon Máy chủ Discord '{g.name}' ({g.id}) sang LOGO_ID.png mới!")
+                        updated_any = True
+                    except Exception as ic_err:
+                        logger.warning(f"Không thể cập nhật Icon máy chủ {g.id}: {ic_err}")
+
+            if updated_any:
+                hash_file.write_text(current_hash, encoding="utf-8")
+        except Exception as e:
+            logger.debug(f"Lỗi đồng bộ logo tự động: {e}")
 
     async def _auto_assign_member_roles(self) -> None:
         """Tự động kiểm tra và cấp Role '🌱 Học sinh' (MEMBER_ROLE_ID) cho toàn bộ thành viên hiện có trên Server."""
