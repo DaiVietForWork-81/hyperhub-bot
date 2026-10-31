@@ -2626,6 +2626,34 @@ class BotAPIBridge:
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         file_ext = os.path.splitext(file_name)[1].lower().replace(".", "").upper() or "PDF"
 
+        # 4b. Đẩy tệp lên kênh Discord #database (ID: 1548627763467128912) để lấy link CDN phục vụ Web Vercel 24/7
+        db_channel_id = int(getattr(settings, "DATABASE_ARCHIVE_CHANNEL_ID", 1548627763467128912) or 1548627763467128912)
+        saved_channel_id = 0
+        saved_message_id = 0
+        saved_jump_url = "https://orbit-psi-black.vercel.app/#vault"
+        discord_cdn_url = ""
+        try:
+            db_chan = self.bot.get_channel(db_channel_id)
+            if db_chan is None:
+                db_chan = await self.bot.fetch_channel(db_channel_id)
+            if db_chan and hasattr(db_chan, "send"):
+                import io as _io
+                d_file = discord.File(_io.BytesIO(file_bytes), filename=file_name)
+                sent_msg = await db_chan.send(
+                    content=(
+                        f"📦 **[ORBIT DATABASE ARCHIVE]** `{file_name}`\n"
+                        f"• **Môn:** `{detected_subject}` • **Khối:** `{detected_grade}` • **Người nộp:** `{uploader_name}`"
+                    ),
+                    file=d_file,
+                )
+                saved_channel_id = db_channel_id
+                saved_message_id = sent_msg.id
+                saved_jump_url = sent_msg.jump_url
+                if sent_msg.attachments:
+                    discord_cdn_url = sent_msg.attachments[0].url
+        except Exception as d_err:
+            logger.warning(f"Không thể đẩy tệp lên kênh Discord #database ({db_channel_id}): {d_err}")
+
         # 5. Lưu vào database documents_archive (Local SQLite)
         try:
             insert_sql = """
@@ -2649,9 +2677,9 @@ class BotAPIBridge:
                 page_count,
                 uploader_id,
                 uploader_name,
-                0,
-                0,
-                "https://orbit-psi-black.vercel.app/#vault",
+                saved_channel_id,
+                saved_message_id,
+                saved_jump_url,
                 now_iso,
                 file_hash,
                 raw_text_summary[:50000] if raw_text_summary else "",
@@ -2683,9 +2711,9 @@ class BotAPIBridge:
                 page_count,
                 uploader_id,
                 uploader_name,
-                0,
-                0,
-                "https://orbit-psi-black.vercel.app/#vault",
+                saved_channel_id,
+                saved_message_id,
+                saved_jump_url,
                 now_iso,
                 file_hash,
                 raw_text_summary[:50000] if raw_text_summary else "",
@@ -2707,7 +2735,7 @@ class BotAPIBridge:
         except Exception as fe:
             logger.warning(f"Không thể lưu file upload: {fe}")
 
-        # 6. Đồng bộ sang Turso libSQL Cloud Database (Kho 5GB)
+        # 6. Đồng bộ sang Turso libSQL Cloud Database (Kho 5GB) & Lưu luôn doc_cdn_{doc_id}
         try:
             from database.turso_client import turso_db
             if turso_db.is_configured:
@@ -2736,7 +2764,7 @@ class BotAPIBridge:
                     turso_sql,
                     detected_subject, file_name, file_name, len(file_bytes), file_ext,
                     detected_grade, question_count, page_count, uploader_id,
-                    uploader_name, 0, 0, "https://orbit-psi-black.vercel.app/#vault", now_iso,
+                    uploader_name, saved_channel_id, saved_message_id, saved_jump_url, now_iso,
                     file_hash, raw_text_summary[:50000] if raw_text_summary else "",
                     raw_text_summary, academic_year, school_name,
                     "XAC_MINH", exam_type_str, confidence,
@@ -2747,6 +2775,18 @@ class BotAPIBridge:
                     1 if client_pre_parsed else 0,
                     "web"
                 )
+                if discord_cdn_url and doc_id:
+                    import json as _json
+                    await turso_db.execute(
+                        """INSERT INTO bot_kv_store (key, value, updated_at) VALUES (?, ?, ?)
+                           ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at""",
+                        f"doc_cdn_{doc_id}",
+                        _json.dumps(
+                            {"direct_url": discord_cdn_url, "file_name": file_name, "file_type": file_ext},
+                            ensure_ascii=False,
+                        ),
+                        int(time.time()),
+                    )
         except Exception as te:
             logger.debug("Không thể đồng bộ đề lên Turso: %s", te)
 
