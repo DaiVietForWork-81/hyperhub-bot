@@ -139,7 +139,7 @@ def prune_tree_commands(bot) -> int:
 
 
 class CompetitiveProgrammingBot(commands.Bot):
-    """Lớp Bot Discord điều phối hệ thống HyperHub (kho đề + web)."""
+    """Lớp Bot Discord điều phối hệ thống Orbit | Vietnam (kho đề + web)."""
 
     def __init__(self):
         intents = discord.Intents.default()
@@ -155,7 +155,7 @@ class CompetitiveProgrammingBot(commands.Bot):
             chunk_guilds_at_startup=False,  # CỰC KỲ QUAN TRỌNG: Không tải toàn bộ members lúc bật bot để tránh spike CPU 100%
         )
 
-        # HyperHub Services & Database initialization
+        # Orbit Services & Database initialization
         self.settings = settings
         self.db = Database(Path("data/bot.db"))
         self.cooldowns = CooldownRepository(self.db)
@@ -171,7 +171,7 @@ class CompetitiveProgrammingBot(commands.Bot):
         # Giới hạn ThreadPoolExecutor của asyncio.to_thread tối đa 2 workers để không ngốn CPU trên server 0.35 core
         import concurrent.futures
         self.loop.set_default_executor(
-            concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="HyperHubWorker")
+            concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="OrbitWorker")
         )
 
         # Kiểm tra CSDL bot.db có tồn tại hay không, nếu mất dữ liệu -> Tự động khôi phục từ Discord
@@ -239,7 +239,7 @@ class CompetitiveProgrammingBot(commands.Bot):
             if getattr(settings, "LOGO_URL", ""):
                 embeds.set_logo_url(settings.LOGO_URL)
         except Exception as e:
-            logger.warning(f"Lỗi khởi tạo HyperHub Database: {e}")
+            logger.warning(f"Lỗi khởi tạo Orbit Database: {e}")
 
         logger.info("Đang nạp các module Cogs...")
         for ext in INITIAL_EXTENSIONS:

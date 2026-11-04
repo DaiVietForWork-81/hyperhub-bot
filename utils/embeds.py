@@ -274,8 +274,8 @@ def info_embed(title: str, description: str, **kwargs) -> discord.Embed:
     )
 
 
-# ==================== HYPERHUB EMBED HELPERS ====================
-HYPERHUB_COLOR = 0x9F7AEA
+# ==================== ORBIT EMBED HELPERS ====================
+ORBIT_COLOR = 0x9F7AEA
 AURA_COLOR = 0x7C3AED
 SUCCESS_COLOR = 0x34D399
 ERROR_COLOR = 0xF87171
@@ -285,7 +285,7 @@ INFO_COLOR = 0x3B82F6
 FOOTER_TEXT = "🌌 ORBIT | VIETNAM"
 DIVIDER = "━" * 16
 
-_THEME_COLOR = HYPERHUB_COLOR
+_THEME_COLOR = ORBIT_COLOR
 _LOGO_URL = ""
 
 

@@ -269,7 +269,7 @@ class SystemSyncService:
         embed = discord.Embed(
             title="🔔 PHÁT HIỆN BẢN CẬP NHẬT MỚI TỪ GITHUB!",
             description=(
-                f"Đã phát hiện commit mới trên repository **hyperhub-bot** (nhánh `main`).\n"
+                f"Đã phát hiện commit mới trên repository **Orbit Bot** (nhánh `main`).\n"
                 f"Hệ thống cho phép bạn **Cập Nhật Ngay** chỉ bằng 1 cú click chuột!"
             ),
             color=0xF59E0B,  # Amber
