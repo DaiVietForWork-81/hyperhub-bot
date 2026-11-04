@@ -22,6 +22,9 @@ from utils.logger import get_logger
 logger = get_logger("InfoBoardCog")
 
 INFO_CHANNEL_ID = getattr(settings, "INFO_CHANNEL_ID", 1534148186942214226)
+WELCOME_CHANNEL_ID = 1534148107712073788
+SAPPHIRE_BOT_ID = 678344927997853742
+
 
 
 class InfoBoardRefreshView(discord.ui.View):
@@ -110,6 +113,82 @@ class InfoBoardCog(commands.Cog, name="InfoBoard"):
     async def on_ready(self) -> None:
         """Tự động kiểm tra và đăng bảng thông tin khi bot khởi động."""
         await self.ensure_info_board()
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        """Tự động chuyển đổi tin nhắn chào mừng từ Sapphire (nếu còn chữ HyperHub) sang thương hiệu Orbit."""
+        if message.channel.id != WELCOME_CHANNEL_ID:
+            return
+        if self.bot.user and message.author.id == self.bot.user.id:
+            return
+
+        has_hyper = "hyperhub" in (message.content or "").lower()
+        if not has_hyper:
+            for emb in message.embeds:
+                if "hyperhub" in ((emb.title or "") + (emb.description or "") + (emb.footer.text if emb.footer and emb.footer.text else "")).lower():
+                    has_hyper = True
+                    break
+
+        if not has_hyper:
+            return
+
+        try:
+            new_content = (message.content or "").replace("HyperHub", "Orbit").replace("HYPERHUB", "ORBIT")
+            welcome_embed = discord.Embed(
+                title="💜 WELCOME TO THE ORBIT",
+                description=(
+                    "╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━╮\n"
+                    "　✨ **LEARN • CHILL • CONNECT**\n"
+                    "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯\n\n"
+                    "🌌 **Orbit** là nơi bạn có thể học cùng mọi người, tập trung một mình với nhạc chill, tìm tài liệu, giao lưu và giải trí sau những giờ học.\n\n"
+                    "╭─ 🧭・**BẮT ĐẦU TẠI ĐÂY** ─────╮\n"
+                    "│ 📜・**rules**\n"
+                    "│ └─ Nội quy & quy định của Orbit\n"
+                    "│ 🔗・**info**\n"
+                    "│ └─ Thông tin, hướng dẫn & giới thiệu server\n"
+                    "│ 🎭・**role-info**\n"
+                    "│ └─ Thông tin & ý nghĩa của các role\n"
+                    "╰────────────────────────────╯\n\n"
+                    "╭─ 📡・**TIN TỨC & CẬP NHẬT** ──╮\n"
+                    "│ 📢・**announcements**\n"
+                    "│ └─ Thông báo quan trọng từ Orbit\n"
+                    "│ 🆕・**updates**\n"
+                    "│ └─ Tin tức, thay đổi & cập nhật mới\n"
+                    "╰────────────────────────────╯\n\n"
+                    "╭─ 💬・**CỘNG ĐỒNG** ───────────╮\n"
+                    "│ 💭・**chat-tổng**\n"
+                    "│ └─ Trò chuyện, giao lưu & làm quen\n"
+                    "│ 💡・**diễn-đàn**\n"
+                    "│ └─ Đặt câu hỏi, thảo luận & chia sẻ ý tưởng\n"
+                    "│ 📸・**media**\n"
+                    "│ └─ Chia sẻ ảnh, video & những khoảnh khắc thú vị\n"
+                    "╰────────────────────────────╯\n\n"
+                    "╭─ 📚・**HỌC TẬP** ─────────────╮\n"
+                    "│ 📄・**tài-liệu-tham-khảo**\n"
+                    "│ └─ Tài liệu, tài nguyên & nguồn học tập hữu ích\n"
+                    "╰────────────────────────────╯\n\n"
+                    "╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━╮\n"
+                    "　🌙 **STUDY WHEN YOU WANT**\n"
+                    "　🎧 **CHILL WHEN YOU NEED**\n"
+                    "　💜 **CONNECT WHEN YOU'RE READY**\n"
+                    "╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯\n\n"
+                    "> ✦ **Rất vui khi có bạn ở đây!**\n"
+                    "> Khám phá Orbit và tìm cho mình một góc riêng nhé. 🌌"
+                ),
+                color=0xA855F7,
+            )
+            welcome_embed.set_author(name="✦ O R B I T ✦")
+            welcome_embed.set_image(url="https://orbit-psi-black.vercel.app/orbit_full.png")
+            welcome_embed.set_footer(text="✦ Orbit • Learn · Chill · Connect · Enjoy")
+
+            await message.channel.send(
+                content=new_content,
+                embed=welcome_embed,
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+            )
+            await message.delete()
+        except Exception as e:
+            logger.warning(f"Không thể chuyển đổi tin nhắn chào mừng sang Orbit: {e}")
 
     @app_commands.command(
         name="refresh_info",

@@ -318,10 +318,11 @@ class BotAPIBridge:
     async def _auth_middleware(self, request: web.Request, handler: Any) -> web.Response:
         """Kiểm tra token cho các endpoint POST, DELETE, PATCH, PUT / yêu cầu bảo mật."""
         if request.method in ("POST", "DELETE", "PATCH", "PUT"):
-            # Endpoint upload, import_gdrive, notify, account/link, study, admin và system endpoints sẽ tự kiểm tra xác thực bên trong handler
+            # Endpoint upload, import_gdrive, notify, account/link, study, forum, admin và system endpoints sẽ tự kiểm tra xác thực bên trong handler
             if (
-                request.path in ("/api/documents/upload", "/api/documents/import_gdrive", "/api/notify", "/api/account/link", "/api/study/checkin")
+                request.path in ("/api/documents/upload", "/api/documents/import_gdrive", "/api/notify", "/api/account/link", "/api/account/verify-member", "/api/study/checkin")
                 or request.path.startswith("/api/study/")
+                or request.path.startswith("/api/forum/")
                 or request.path.startswith("/api/admin/")
                 or request.path.startswith("/api/system/")
             ):
@@ -350,8 +351,14 @@ class BotAPIBridge:
         self.app.router.add_get("/api/user/{discord_id}", self.handle_user_profile)
         self.app.router.add_post("/api/notify", self.handle_notify)
         self.app.router.add_post("/api/account/link", self.handle_account_link)
+        self.app.router.add_post("/api/account/verify-member", self.handle_verify_member)
         self.app.router.add_get("/api/account/me", self.handle_account_me)
         self.app.router.add_get("/api/skills", self.handle_get_skills)
+        # Endpoints Diễn Đàn Orbit (Đồng bộ 2 chiều Web <-> Discord #💡・diễn-đàn)
+        self.app.router.add_get("/api/forum/threads", self.handle_forum_get_threads)
+        self.app.router.add_post("/api/forum/threads", self.handle_forum_create_thread)
+        self.app.router.add_get("/api/forum/threads/{thread_id}", self.handle_forum_get_thread_detail)
+        self.app.router.add_post("/api/forum/threads/{thread_id}/messages", self.handle_forum_post_message)
         # Endpoints Đồng Bộ Hồ Sơ Học Tập, Chuỗi Ngày Học (Streak) & Bảng Xếp Hạng Học Thuật (Discord <-> Web)
         self.app.router.add_get("/api/study/profile", self.handle_study_profile)
         self.app.router.add_get("/api/study/profile/{discord_id}", self.handle_study_profile)
@@ -4167,6 +4174,454 @@ class BotAPIBridge:
             except Exception as e:
                 logger.debug(f"Lỗi vòng lặp Turso Relay: {e}")
             await asyncio.sleep(2.5)
+
+    # =========================================================================
+    # XÁC THỰC THÀNH VIÊN SERVER DISCORD & DIỄN ĐÀN 2 CHIỀU (WEB <-> DISCORD)
+    # =========================================================================
+    FORUM_CHANNEL_ID = 1535557885721841744
+    FORUM_CATEGORIES = ("Góc thắc mắc", "Facts", "Hỏi đáp", "Ôn thi")
+
+    async def handle_verify_member(self, request: web.Request) -> web.Response:
+        """POST /api/account/verify-member: Xác thực tài khoản thành viên Server Orbit | Vietnam
+        bằng Discord ID hoặc Username/Display Name để đăng nhập vào Orbit Hub & Diễn Đàn.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+        identifier = str(body.get("identifier") or "").strip()
+        if not identifier:
+            return web.json_response(
+                {"error": "Missing identifier", "message": "Vui lòng nhập Discord Username hoặc Discord ID của bạn."},
+                status=400,
+            )
+
+        guild = self.bot.get_guild(DISCORD_GUILD_ID) or (self.bot.guilds[0] if self.bot.guilds else None)
+        if not guild:
+            return web.json_response(
+                {"error": "Guild unavailable", "message": "Bot đang kết nối tới máy chủ Discord, vui lòng thử lại sau vài giây."},
+                status=503,
+            )
+
+        member = None
+        clean_id = identifier.lstrip("<@!").rstrip(">").strip()
+        if clean_id.isdigit():
+            uid = int(clean_id)
+            member = guild.get_member(uid)
+            if not member:
+                try:
+                    member = await guild.fetch_member(uid)
+                except Exception:
+                    member = None
+        else:
+            q_lower = identifier.lstrip("@").strip().lower()
+            for m in guild.members:
+                if (
+                    m.name.lower() == q_lower
+                    or (m.global_name and m.global_name.lower() == q_lower)
+                    or m.display_name.lower() == q_lower
+                ):
+                    member = m
+                    break
+            if not member:
+                try:
+                    found = await guild.query_members(query=identifier.lstrip("@").strip(), limit=5)
+                    if found:
+                        member = found[0]
+                except Exception:
+                    member = None
+
+        if not member or member.bot:
+            return web.json_response(
+                {
+                    "error": "Member not found",
+                    "message": (
+                        f"Không tìm thấy thành viên '{identifier}' trong máy chủ Discord Orbit | Vietnam. "
+                        "Hãy chắc chắn bạn đã tham gia server Discord Orbit và nhập đúng Username hoặc ID!"
+                    ),
+                },
+                status=404,
+            )
+
+        avatar_url = (
+            member.display_avatar.url
+            if member.display_avatar
+            else f"https://cdn.discordapp.com/embed/avatars/{int(member.id) % 5}.png"
+        )
+        roles = [r.name for r in member.roles if r.name != "@everyone"]
+
+        return web.json_response(
+            {
+                "success": True,
+                "user": {
+                    "id": str(member.id),
+                    "username": member.name,
+                    "global_name": member.display_name or member.global_name or member.name,
+                    "avatar": avatar_url,
+                    "email": f"{member.name}@discord.orbit.vn",
+                    "verified": True,
+                    "roles": roles,
+                    "connectedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                },
+            }
+        )
+
+    @staticmethod
+    def _parse_forum_message_dict(m: dict) -> dict:
+        """Chuẩn hóa tin nhắn Discord (bao gồm cả tin nhắn do Bot chuyển tiếp từ Web) thành cấu trúc chuẩn cho Web Forum."""
+        raw_content = m.get("content") or ""
+        author = m.get("author") or {}
+        author_id = str(author.get("id") or "")
+        author_name = author.get("global_name") or author.get("username") or "Thành viên Orbit"
+        avatar_hash = author.get("avatar")
+        if avatar_hash and author_id:
+            author_avatar = f"https://cdn.discordapp.com/avatars/{author_id}/{avatar_hash}.png"
+        else:
+            author_avatar = "https://orbit-psi-black.vercel.app/server_icon.png"
+
+        source = "discord"
+        clean_content = raw_content
+
+        # Nếu là bài đăng gốc hoặc phản hồi được gửi từ Orbit Web qua Bot
+        web_reply_match = re.match(
+            r"^💬 \*\*<@!?(\d+)> \(([^)]+)\)\*\* \*\(từ Orbit Web\)\*:\n([\s\S]*)$",
+            raw_content,
+        )
+        web_starter_match = re.match(
+            r"^🪐 \*\*Chuyên mục: ([^\n•]+) • Orbit Forum\*\*\n👤 \*\*Người đăng:\*\* ([^\n]+)\n(?:🖼️ \*\*Avatar:\*\* (https?://[^\s\n]+)\n)?━+\n([\s\S]*)$",
+            raw_content,
+        )
+
+        if web_reply_match:
+            author_id = web_reply_match.group(1)
+            author_name = web_reply_match.group(2).strip()
+            clean_content = web_reply_match.group(3).strip()
+            source = "web"
+        elif web_starter_match:
+            raw_poster = web_starter_match.group(2).strip()
+            custom_av = web_starter_match.group(3)
+            clean_content = web_starter_match.group(4).strip()
+            mention_m = re.search(r"<@!?(\d+)>\s*\(`?([^`)`]+)`?\)", raw_poster)
+            if mention_m:
+                author_id = mention_m.group(1)
+                author_name = mention_m.group(2).strip()
+                source = "web"
+            else:
+                author_name = re.sub(r"\s*\(`[^`]+`\)", "", raw_poster).strip()
+            if custom_av:
+                author_avatar = custom_av
+
+        attachments = [
+            {
+                "id": str(a.get("id", "")),
+                "filename": a.get("filename", "attachment"),
+                "url": a.get("url", ""),
+                "size": a.get("size", 0),
+            }
+            for a in (m.get("attachments") or [])
+        ]
+
+        return {
+            "id": str(m.get("id", "")),
+            "author_id": author_id,
+            "author_name": author_name,
+            "author_avatar": author_avatar,
+            "content": clean_content,
+            "created_at": m.get("timestamp") or datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "source": source,
+            "attachments": attachments,
+        }
+
+    async def _discord_rest(self, method: str, path: str, json_body: dict | None = None) -> tuple[int, Any]:
+        """Gọi trực tiếp Discord REST API v10 bằng token của Bot."""
+        import aiohttp as _aiohttp
+        token = getattr(settings, "DISCORD_TOKEN", "") or os.getenv("DISCORD_TOKEN", "")
+        headers = {
+            "Authorization": f"Bot {token}",
+            "Content-Type": "application/json",
+        }
+        url = f"https://discord.com/api/v10{path}"
+        async with _aiohttp.ClientSession(headers=headers, timeout=_aiohttp.ClientTimeout(total=12.0)) as s:
+            async with s.request(method, url, json=json_body) as r:
+                try:
+                    data = await r.json()
+                except Exception:
+                    data = None
+                return r.status, data
+
+    async def handle_forum_get_threads(self, request: web.Request) -> web.Response:
+        """GET /api/forum/threads: Lấy danh sách các bài thảo luận trong #💡・diễn-đàn đồng bộ với Discord."""
+        st_ch, ch_data = await self._discord_rest("GET", f"/channels/{self.FORUM_CHANNEL_ID}")
+        available_tags = (ch_data or {}).get("available_tags", []) if st_ch == 200 else []
+        tag_id_to_name = {str(t["id"]): t["name"] for t in available_tags}
+
+        st_act, act_data = await self._discord_rest("GET", f"/guilds/{DISCORD_GUILD_ID}/threads/active")
+        active_threads = [
+            t for t in ((act_data or {}).get("threads") or [])
+            if str(t.get("parent_id")) == str(self.FORUM_CHANNEL_ID)
+        ] if st_act == 200 else []
+
+        st_arc, arc_data = await self._discord_rest("GET", f"/channels/{self.FORUM_CHANNEL_ID}/threads/archived/public")
+        archived_threads = ((arc_data or {}).get("threads") or []) if st_arc == 200 else []
+
+        seen_ids = set()
+        raw_threads = []
+        for t in active_threads + archived_threads:
+            tid = str(t.get("id"))
+            if tid and tid not in seen_ids:
+                seen_ids.add(tid)
+                raw_threads.append(t)
+
+        # Lấy tin nhắn mở đầu (starter message) của từng thread song song để hiển thị preview + tác giả
+        async def _enrich_thread(t: dict) -> dict:
+            tid = str(t["id"])
+            applied = [str(x) for x in (t.get("applied_tags") or [])]
+            category = "Góc thắc mắc"
+            for tag_id in applied:
+                if tag_id in tag_id_to_name:
+                    category = tag_id_to_name[tag_id]
+                    break
+            # Chuẩn hóa tên chuyên mục nếu nằm trong tiêu đề [Facts], [Hỏi đáp], [Ôn thi], [Góc thắc mắc]
+            t_name = t.get("name") or "Chủ đề thảo luận"
+            for cat_name in self.FORUM_CATEGORIES:
+                if t_name.lower().startswith(f"[{cat_name.lower()}]"):
+                    category = cat_name
+                    break
+
+            st_m, msgs = await self._discord_rest("GET", f"/channels/{tid}/messages?limit=2")
+            starter_parsed = None
+            if st_m == 200 and isinstance(msgs, list) and msgs:
+                # Tin nhắn đầu tiên của thread có id == tid hoặc phần tử cuối nếu ít tin nhắn
+                starter_raw = next((m for m in msgs if str(m.get("id")) == tid), msgs[-1])
+                starter_parsed = self._parse_forum_message_dict(starter_raw)
+
+            msg_count = int(t.get("message_count") or t.get("total_message_sent") or 1)
+            created_ts = (
+                starter_parsed["created_at"]
+                if starter_parsed
+                else (t.get("thread_metadata") or {}).get("create_timestamp")
+                or datetime.datetime.now(datetime.timezone.utc).isoformat()
+            )
+
+            return {
+                "id": tid,
+                "title": t_name,
+                "category": category,
+                "author_id": starter_parsed["author_id"] if starter_parsed else str(t.get("owner_id", "")),
+                "author_name": starter_parsed["author_name"] if starter_parsed else "Thành viên Orbit",
+                "author_avatar": starter_parsed["author_avatar"] if starter_parsed else "https://orbit-psi-black.vercel.app/server_icon.png",
+                "excerpt": (starter_parsed["content"][:220] if starter_parsed else ""),
+                "message_count": max(1, msg_count),
+                "reply_count": max(0, msg_count - 1),
+                "created_at": created_ts,
+                "jump_url": f"https://discord.com/channels/{DISCORD_GUILD_ID}/{tid}",
+            }
+
+        enriched = await asyncio.gather(*[_enrich_thread(t) for t in raw_threads[:25]])
+        enriched_list = sorted(enriched, key=lambda x: int(x["id"]), reverse=True)
+
+        return web.json_response(
+            {
+                "channel_id": str(self.FORUM_CHANNEL_ID),
+                "channel_name": "💡・diễn-đàn",
+                "categories": list(self.FORUM_CATEGORIES),
+                "threads": enriched_list,
+            }
+        )
+
+    async def handle_forum_get_thread_detail(self, request: web.Request) -> web.Response:
+        """GET /api/forum/threads/{thread_id}: Lấy chi tiết chủ đề và toàn bộ tin nhắn đồng bộ với Discord."""
+        thread_id = request.match_info.get("thread_id", "").strip()
+        if not thread_id.isdigit():
+            return web.json_response({"error": "Invalid thread_id"}, status=400)
+
+        st_t, t_data = await self._discord_rest("GET", f"/channels/{thread_id}")
+        if st_t != 200 or not isinstance(t_data, dict):
+            return web.json_response({"error": "Thread not found"}, status=404)
+
+        st_ch, ch_data = await self._discord_rest("GET", f"/channels/{self.FORUM_CHANNEL_ID}")
+        available_tags = (ch_data or {}).get("available_tags", []) if st_ch == 200 else []
+        tag_id_to_name = {str(t["id"]): t["name"] for t in available_tags}
+
+        applied = [str(x) for x in (t_data.get("applied_tags") or [])]
+        category = "Góc thắc mắc"
+        for tag_id in applied:
+            if tag_id in tag_id_to_name:
+                category = tag_id_to_name[tag_id]
+                break
+
+        st_m, raw_msgs = await self._discord_rest("GET", f"/channels/{thread_id}/messages?limit=100")
+        messages = []
+        if st_m == 200 and isinstance(raw_msgs, list):
+            # Discord trả về tin nhắn từ mới nhất -> cũ nhất, đảo ngược lại theo thứ tự thời gian
+            for rm in reversed(raw_msgs):
+                parsed = self._parse_forum_message_dict(rm)
+                if parsed["content"] or parsed["attachments"]:
+                    messages.append(parsed)
+
+        return web.json_response(
+            {
+                "id": str(t_data.get("id")),
+                "title": t_data.get("name") or "Chủ đề thảo luận",
+                "category": category,
+                "jump_url": f"https://discord.com/channels/{DISCORD_GUILD_ID}/{thread_id}",
+                "messages": messages,
+            }
+        )
+
+    async def handle_forum_create_thread(self, request: web.Request) -> web.Response:
+        """POST /api/forum/threads: Đăng chủ đề mới từ Web -> Bot tự động tạo bài mới trong #💡・diễn-đàn trên Discord."""
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+        title = str(body.get("title") or "").strip()
+        content = str(body.get("content") or "").strip()
+        category = str(body.get("category") or "Góc thắc mắc").strip()
+        author_id = str(body.get("author_id") or "").strip()
+        author_name = str(body.get("author_name") or "Thành viên Orbit").strip()
+        author_avatar = str(body.get("author_avatar") or "").strip()
+
+        if category not in self.FORUM_CATEGORIES:
+            category = "Góc thắc mắc"
+        if len(title) < 4:
+            return web.json_response(
+                {"error": "Invalid title", "message": "Tiêu đề bài viết cần tối thiểu 4 ký tự."},
+                status=400,
+            )
+        if len(content) < 4:
+            return web.json_response(
+                {"error": "Invalid content", "message": "Nội dung bài viết cần tối thiểu 4 ký tự."},
+                status=400,
+            )
+
+        # Lấy tag ID tương ứng trên kênh #💡・diễn-đàn
+        st_ch, ch_data = await self._discord_rest("GET", f"/channels/{self.FORUM_CHANNEL_ID}")
+        available_tags = (ch_data or {}).get("available_tags", []) if st_ch == 200 else []
+        tag_id = None
+        for t in available_tags:
+            if t.get("name", "").lower() == category.lower():
+                tag_id = str(t["id"])
+                break
+
+        full_title = title if title.startswith("[") else f"[{category}] {title}"
+        poster_str = f"<@{author_id}> (`{author_name}`)" if author_id.isdigit() else f"**{author_name}**"
+        discord_content = (
+            f"🪐 **Chuyên mục: {category} • Orbit Forum**\n"
+            f"👤 **Người đăng:** {poster_str}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{content}"
+        )
+
+        payload: dict[str, Any] = {
+            "name": full_title[:100],
+            "auto_archive_duration": 10080,
+            "message": {
+                "content": discord_content[:1950],
+                "allowed_mentions": {"parse": []},
+            },
+        }
+        if tag_id:
+            payload["applied_tags"] = [tag_id]
+
+        st_create, created = await self._discord_rest("POST", f"/channels/{self.FORUM_CHANNEL_ID}/threads", payload)
+        if st_create not in (200, 201) or not isinstance(created, dict):
+            return web.json_response(
+                {"error": "Discord error", "message": "Không thể tạo bài viết trên kênh Discord #💡・diễn-đàn."},
+                status=502,
+            )
+
+        tid = str(created.get("id"))
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        starter_msg = {
+            "id": tid,
+            "author_id": author_id,
+            "author_name": author_name,
+            "author_avatar": author_avatar or "https://orbit-psi-black.vercel.app/server_icon.png",
+            "content": content,
+            "created_at": now_iso,
+            "source": "web",
+            "attachments": [],
+        }
+
+        return web.json_response(
+            {
+                "success": True,
+                "thread": {
+                    "id": tid,
+                    "title": full_title[:100],
+                    "category": category,
+                    "author_id": author_id,
+                    "author_name": author_name,
+                    "author_avatar": author_avatar or "https://orbit-psi-black.vercel.app/server_icon.png",
+                    "excerpt": content[:220],
+                    "message_count": 1,
+                    "reply_count": 0,
+                    "created_at": now_iso,
+                    "jump_url": f"https://discord.com/channels/{DISCORD_GUILD_ID}/{tid}",
+                    "messages": [starter_msg],
+                },
+            },
+            status=201,
+        )
+
+    async def handle_forum_post_message(self, request: web.Request) -> web.Response:
+        """POST /api/forum/threads/{thread_id}/messages: Gửi tin nhắn phản hồi từ Web -> đồng bộ ngay vào Thread Discord."""
+        thread_id = request.match_info.get("thread_id", "").strip()
+        if not thread_id.isdigit():
+            return web.json_response({"error": "Invalid thread_id"}, status=400)
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+        content = str(body.get("content") or "").strip()
+        author_id = str(body.get("author_id") or "").strip()
+        author_name = str(body.get("author_name") or "Thành viên Orbit").strip()
+        author_avatar = str(body.get("author_avatar") or "").strip()
+
+        if not content:
+            return web.json_response(
+                {"error": "Empty message", "message": "Nội dung tin nhắn không được để trống."},
+                status=400,
+            )
+
+        uid_tag = author_id if author_id.isdigit() else "0"
+        discord_msg_text = f"💬 **<@{uid_tag}> ({author_name})** *(từ Orbit Web)*:\n{content[:1850]}"
+
+        st_post, posted = await self._discord_rest(
+            "POST",
+            f"/channels/{thread_id}/messages",
+            {
+                "content": discord_msg_text,
+                "allowed_mentions": {"parse": []},
+            },
+        )
+        if st_post not in (200, 201) or not isinstance(posted, dict):
+            return web.json_response(
+                {"error": "Discord error", "message": "Không thể gửi tin nhắn vào chủ đề Discord."},
+                status=502,
+            )
+
+        return web.json_response(
+            {
+                "success": True,
+                "message": {
+                    "id": str(posted.get("id", int(time.time() * 1000))),
+                    "author_id": author_id,
+                    "author_name": author_name,
+                    "author_avatar": author_avatar or "https://orbit-psi-black.vercel.app/server_icon.png",
+                    "content": content,
+                    "created_at": posted.get("timestamp") or datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "source": "web",
+                    "attachments": [],
+                },
+            },
+            status=201,
+        )
 
     async def stop(self) -> None:
         """Dừng HTTP Server an toàn."""
