@@ -193,6 +193,18 @@ def detect_detailed_exam_track(
     if doc_cat == DocumentCategory.LESSON_PLAN or any(k in combined for k in ["giáo án", "giao an", "khbd", "kế hoạch bài dạy", "ke hoach bai day", "5512"]):
         return "Giáo án / Kế hoạch bài dạy (KHBD)"
 
+    # Khử cụm dễ gây hiểu lầm: "trường thpt chuyên ..." và "chuyên đề ..."
+    combined_no_school_topic = re.sub(
+        r"(?:trường\s*)?thpt\s*chuyên\s+[a-zA-Zà-ỹ0-9\s\-–]{2,35}",
+        " ",
+        combined,
+    )
+    combined_no_school_topic = re.sub(
+        r"\bchuyên\s*(?:đề|ngành|mục|cần|sâu|viên|môn)\b",
+        " ",
+        combined_no_school_topic,
+    )
+
     # 2. Tuyển sinh vào 10
     is_vao_10 = any(k in combined for k in [
         "vào 10", "vao 10", "vào lớp 10", "vao lop 10",
@@ -200,7 +212,10 @@ def detect_detailed_exam_track(
         "tuyen sinh vao 10", "tuyển sinh lớp 10", "thi vào 10", "thi vao 10"
     ])
     if is_vao_10:
-        if base_track == ExamTrackTier.CHUYEN or any(k in combined for k in ["chuyên", "chuyen", "thpt chuyên"]):
+        if base_track == ExamTrackTier.CHUYEN or any(
+            k in combined_no_school_topic
+            for k in ["vào 10 chuyên", "lớp 10 chuyên", "thi chuyên", "chuyên toán", "chuyên văn", "chuyên anh", "chuyên lý", "chuyên hóa", "chuyên sinh", "chuyên tin"]
+        ):
             return "Đề thi tuyển sinh vào 10 Chuyên"
         return "Đề thi tuyển sinh vào lớp 10"
 
@@ -220,24 +235,17 @@ def detect_detailed_exam_track(
         return "Đề thi tốt nghiệp THPT"
 
     # 5. Học sinh giỏi (HSG)
-    is_hsg = (base_track == ExamTrackTier.HSG) or any(k in combined for k in [
+    is_hsg = (base_track == ExamTrackTier.HSG) or any(k in combined_no_school_topic for k in [
         "học sinh giỏi", "hoc sinh gioi", "hsg", "chọn đội tuyển", "chon doi tuyen", "hsgqg"
     ])
     if is_hsg:
-        if any(k in combined for k in ["quốc gia", "quoc gia", "qg"]):
+        if any(k in combined_no_school_topic for k in ["quốc gia", "quoc gia", "qg"]):
             return "Đề thi Học sinh giỏi Quốc gia (HSGQG)"
-        elif any(k in combined for k in ["tỉnh", "tinh", "thành phố", "thanh pho", "tp"]):
+        elif any(k in combined_no_school_topic for k in ["tỉnh", "tinh", "thành phố", "thanh pho", "tp"]):
             return "Đề thi Học sinh giỏi cấp Tỉnh / TP"
         return "Đề thi Học sinh giỏi (HSG)"
 
-    # 6. Chuyên / Olympic
-    is_chuyen = (base_track == ExamTrackTier.CHUYEN) or any(k in combined for k in [
-        "olympic", "chuyên", "thpt chuyên", "khoa học tự nhiên", "khtn", "amsterdam", "chuyen"
-    ])
-    if is_chuyen:
-        return "Đề thi Chuyên / Olympic"
-
-    # 7. Đề thi Học kỳ / Giữa kỳ
+    # 6. Đề thi Học kỳ / Giữa kỳ (Kiểm tra trước Chuyên để đề học kỳ của trường Chuyên không bị nhầm thành đề thi Chuyên)
     has_giua_ky_1 = any(k in combined for k in ["giữa kỳ 1", "giua ky 1", "giữa học kỳ 1", "giua hoc ky 1", "gki", "gk1", "gk 1"])
     has_cuoi_ky_1 = any(k in combined for k in ["học kỳ 1", "hoc ky 1", "học kì 1", "hoc ki 1", "hk1", "hk 1", "cuối kỳ 1", "cuoi ky 1", "cki"])
     has_giua_ky_2 = any(k in combined for k in ["giữa kỳ 2", "giua ky 2", "giữa học kỳ 2", "giua hoc ky 2", "gkii", "gk2", "gk 2"])
@@ -251,6 +259,13 @@ def detect_detailed_exam_track(
         return "Đề thi Giữa học kỳ 2"
     if has_cuoi_ky_2:
         return "Đề thi Học kỳ 2"
+
+    # 7. Chuyên / Olympic (Đã loại trừ "khoa học tự nhiên" / "khtn" của Cấp 2 và tên trường Chuyên)
+    is_chuyen = (base_track == ExamTrackTier.CHUYEN) or any(k in combined_no_school_topic for k in [
+        "olympic", "thi chuyên", "đề chuyên", "chuyên toán", "chuyên lý", "chuyên hóa", "chuyên sinh", "chuyên tin", "chuyên văn", "chuyên anh"
+    ])
+    if is_chuyen:
+        return "Đề thi Chuyên / Olympic"
 
     # 8. Kiểm tra định kỳ (1 tiết / 45 phút) / Kiểm tra nhanh
     if any(k in combined for k in ["15 phút", "15 phut", "kiểm tra nhanh", "kiem tra nhanh", "thường xuyên", "kttx"]):
@@ -517,6 +532,108 @@ class DocumentInspector:
             grade=pass2.grade_level,
             doc_cat=category,
         )
+
+        # -------------------------------------------------------------
+        # ĐỐI CHIẾU SÂU QUA CLOUD VERIFIER (NVIDIA NIM) VỚI BẢO VỆ QUOTA 40 RPM / 10K RPD
+        # -------------------------------------------------------------
+        try:
+            from .cloud_verifier import CloudExamVerifier, _deterministic_post_audit
+
+            has_subj_conflict = bool(getattr(pass3, "filename_spoofed", False))
+            cloud_res = None
+            if CloudExamVerifier.should_invoke_cloud(
+                file_name=name,
+                raw_text=_raw_text,
+                local_subject=subject.name,
+                local_grade=pass2.grade_level.value,
+                local_track=exam_track.value,
+                local_confidence=conf,
+                has_conflict=has_subj_conflict,
+            ):
+                cloud_res = CloudExamVerifier.verify_exam(file_name=name, raw_text=_raw_text)
+
+            if not cloud_res:
+                cloud_res = _deterministic_post_audit(
+                    name,
+                    _raw_text,
+                    {
+                        "subject": subject.name,
+                        "grade_level": pass2.grade_level.value,
+                        "exam_track": exam_track.value,
+                        "detailed_exam_track": detailed_track_str,
+                    },
+                )
+
+            if cloud_res:
+                c_subj = str(cloud_res.get("subject") or "").upper()
+                if c_subj in Subject.__members__ and c_subj != "GENERAL":
+                    subject = Subject[c_subj]
+                    conf = max(conf, float(cloud_res.get("confidence") or 0.96))
+
+                    c_grade = cloud_res.get("grade_number")
+                    c_grade_str = str(cloud_res.get("grade_level") or "")
+                    if not isinstance(c_grade, int):
+                        m_gr = re.search(r"\b(6|7|8|9|10|11|12)\b", c_grade_str)
+                        if m_gr:
+                            c_grade = int(m_gr.group(1))
+
+                    grade_map = {
+                        6: GradeLevel.GRADE_6,
+                        7: GradeLevel.GRADE_7,
+                        8: GradeLevel.GRADE_8,
+                        9: GradeLevel.GRADE_9,
+                        10: GradeLevel.GRADE_10,
+                        11: GradeLevel.GRADE_11,
+                        12: GradeLevel.GRADE_12,
+                    }
+                    if isinstance(c_grade, int) and c_grade in grade_map:
+                        pass2.grade_level = grade_map[c_grade]
+
+                    c_track = str(cloud_res.get("exam_track") or "").lower()
+                    track_map = {
+                        "thuong": (ExamTrackTier.THUONG, "thường"),
+                        "hsg": (ExamTrackTier.HSG, "hsg"),
+                        "chuyen": (ExamTrackTier.CHUYEN, "chuyên"),
+                        "quoc_te": (ExamTrackTier.QUOC_TE, "quốc tế"),
+                        "chung": (ExamTrackTier.CHUNG, "chung"),
+                    }
+                    if c_track in track_map:
+                        exam_track, track_label = track_map[c_track]
+
+                    c_detailed = cloud_res.get("detailed_exam_track")
+                    if isinstance(c_detailed, str) and len(c_detailed.strip()) > 3:
+                        detailed_track_str = c_detailed.strip()
+
+                    c_school = cloud_res.get("school_or_department")
+                    if (
+                        not school_str
+                        and isinstance(c_school, str)
+                        and len(c_school.strip()) > 2
+                        and c_school.lower() != "null"
+                    ):
+                        school_str = c_school.strip()
+
+                    c_year = cloud_res.get("academic_year")
+                    if (
+                        not academic_year_str
+                        and isinstance(c_year, str)
+                        and re.search(r"20\d{2}", c_year)
+                    ):
+                        academic_year_str = c_year.strip()
+
+                    if cloud_res.get("moet_2025_compliant") is True:
+                        pass2.curriculum.moet_2025_compliant = True
+                    if cloud_res.get("has_answer_keys") is True:
+                        deep_metadata.has_answer_keys = True
+                        pass2.has_answer_key = True
+                    if cloud_res.get("has_detailed_solutions") is True:
+                        deep_metadata.has_detailed_solutions = True
+
+                    c_exam_desc = str(cloud_res.get("exam_description") or "").strip()
+                    if c_exam_desc:
+                        summary = c_exam_desc
+        except Exception:
+            pass
 
         is_moet_2025 = (subject != Subject.LITERATURE) and (
             pass2.curriculum.moet_2025_compliant or (
@@ -816,10 +933,10 @@ class DocumentInspector:
             grade_level = GradeLevel.GRADE_12
         elif RE_GRADE_11.search(text) or RE_GRADE_11.search(fn_norm):
             grade_level = GradeLevel.GRADE_11
-        elif RE_GRADE_10.search(text) or RE_GRADE_10.search(fn_norm):
-            grade_level = GradeLevel.GRADE_10
         elif RE_GRADE_9.search(text) or RE_GRADE_9.search(fn_norm):
             grade_level = GradeLevel.GRADE_9
+        elif RE_GRADE_10.search(text) or RE_GRADE_10.search(fn_norm):
+            grade_level = GradeLevel.GRADE_10
         elif RE_GRADE_8.search(text) or RE_GRADE_8.search(fn_norm):
             grade_level = GradeLevel.GRADE_8
         elif RE_GRADE_7.search(text) or RE_GRADE_7.search(fn_norm):
@@ -834,6 +951,43 @@ class DocumentInspector:
             grade_level = GradeLevel.UNIVERSITY
         elif any(t in candidate_types for t in [ExamType.IELTS_TEST, ExamType.TOEIC_TEST, ExamType.JLPT_TEST, ExamType.HSK_TEST, ExamType.TOPIK_TEST, ExamType.TRKI_TEST]):
             grade_level = GradeLevel.GENERAL_ACADEMIC
+        else:
+            # Suy luận ngược Khối lớp từ Bản đồ Kiến thức Chương trình GDPT 2018 khi tiêu đề khuyết lớp
+            topic_lower = combined_grade_text.lower()
+            topic_grade_patterns = [
+                (
+                    GradeLevel.GRADE_12,
+                    r"\b(nguyên\s+hàm|tích\s+phân|tiệm\s+cận|cực\s+trị\s+của\s+hàm\s+số|oxyz|công\s+thức\s+bayes|ester|carbohydrate|saccharose|cellulose|polysaccharide|amino\s+acid|peptide|pin\s+điện|galvani|vật\s+lí\s+hạt\s+nhân|độ\s+hụt\s+khối|phóng\s+xạ|khí\s+lí\s+tưởng|cảm\s+ứng\s+từ|từ\s+thông|phiên\s+mã|dịch\s+mã|operon\s+lac|di\s+truyền\s+quần\s+thể|hardy[\s\-]*weinberg)\b",
+                ),
+                (
+                    GradeLevel.GRADE_11,
+                    r"\b(cấp\s+số\s+cộng|cấp\s+số\s+nhân|hàm\s+số\s+liên\s+tục|giới\s+hạn\s+của\s+dãy|dao\s+động\s+điều\s+hòa|con\s+lắc\s+lò\s+xo|con\s+lắc\s+đơn|sóng\s+cơ|giao\s+thoa\s+ánh\s+sáng|định\s+luật\s+coulomb|tụ\s+điện|cân\s+bằng\s+hóa\s+học|alkane|alkene|alkyne|arene|aldehyde|ketone|carboxylic\s+acid)\b",
+                ),
+                (
+                    GradeLevel.GRADE_10,
+                    r"\b(mệnh\s+đề\s+toán\s+học|hệ\s+thức\s+lượng\s+trong\s+tam\s+giác|rơi\s+tự\s+do|chuyển\s+động\s+thẳng\s+biến\s+đổi\s+đều|định\s+luật\s+newton|động\s+lượng|orbital\s+nguyên\s+tử|cấu\s+hình\s+electron|biến\s+thiên\s+enthalpy|nguyên\s+phân|giảm\s+phân|tế\s+bào\s+nhân\s+sơ)\b",
+                ),
+                (
+                    GradeLevel.GRADE_9,
+                    r"\b(căn\s+bậc\s+hai|căn\s+bậc\s+ba|hệ\s+thức\s+vi[\-\s]*ét|định\s+lý\s+vi[\-\s]*ét|tứ\s+giác\s+nội\s+tiếp|góc\s+nội\s+tiếp|thấu\s+kính\s+hội\s+tụ|thấu\s+kính\s+phân\s+kỳ|khúc\s+xạ\s+ánh\s+sáng)\b",
+                ),
+                (
+                    GradeLevel.GRADE_8,
+                    r"\b(hằng\s+đẳng\s+thức\s+đáng\s+nhớ|phân\s+thức\s+đại\s+số|định\s+lý\s+thal[eè]s|hình\s+chóp\s+tam\s+giác\s+đều|khối\s+lượng\s+riêng|áp\s+suất\s+chất\s+lỏng|lực\s+đẩy\s+archimedes)\b",
+                ),
+                (
+                    GradeLevel.GRADE_7,
+                    r"\b(số\s+hữu\s+tỉ|tỉ\s+lệ\s+thức|dãy\s+tỉ\s+số\s+bằng\s+nhau|hai\s+tam\s+giác\s+bằng\s+nhau|phản\s+xạ\s+âm)\b",
+                ),
+                (
+                    GradeLevel.GRADE_6,
+                    r"\b(ước\s+chung\s+lớn\s+nhất|bội\s+chung\s+nhỏ\s+nhất|ưcln|bcnn|số\s+nguyên\s+tố\s+cùng\s+nhau)\b",
+                ),
+            ]
+            for cand_grade, pat in topic_grade_patterns:
+                if len(re.findall(pat, topic_lower)) >= 1:
+                    grade_level = cand_grade
+                    break
 
         # 9. Detailed Question Itemization via QuestionParser
         questions, cog_breakdown = QuestionParser.parse_all_questions(text)
@@ -986,7 +1140,27 @@ class DocumentInspector:
                             matched_terms_by_subject[subject_name].append(f"{term}~kd (x{um})")
             subject_scores[subject_name] = score
 
-        # 2. Structural Bias Integration
+        # 2. Structural Bias Integration & Explicit Exam Header Subject Priority
+        header_sample = text_lower[:1600]
+        header_explicit_map = [
+            ("PHYSICS", r"(?:môn(?:\s+thi|\s+kiểm\s+tra)?|bài\s+thi)\s*[:\-–—]?\s*vật\s*l[íy]"),
+            ("CHEMISTRY", r"(?:môn(?:\s+thi|\s+kiểm\s+tra)?|bài\s+thi)\s*[:\-–—]?\s*hóa\s*học"),
+            ("BIOLOGY", r"(?:môn(?:\s+thi|\s+kiểm\s+tra)?|bài\s+thi)\s*[:\-–—]?\s*sinh\s*học"),
+            ("INFORMATICS", r"(?:môn(?:\s+thi|\s+kiểm\s+tra)?|bài\s+thi)\s*[:\-–—]?\s*tin\s*học"),
+            ("LITERATURE", r"(?:môn(?:\s+thi|\s+kiểm\s+tra)?|bài\s+thi)\s*[:\-–—]?\s*ngữ\s*văn"),
+            ("ENGLISH", r"(?:môn(?:\s+thi|\s+kiểm\s+tra)?|bài\s+thi)\s*[:\-–—]?\s*(?:tiếng\s*anh|ngoại\s*ngữ)"),
+            ("NATURAL_SCIENCE", r"(?:môn(?:\s+thi|\s+kiểm\s+tra)?|bài\s+thi)\s*[:\-–—]?\s*(?:khoa\s*học\s*tự\s*nhiên|khtn)"),
+            ("HISTORY", r"(?:môn(?:\s+thi|\s+kiểm\s+tra)?|bài\s+thi)\s*[:\-–—]?\s*lịch\s*sử(?!\s*(?:và|&)\s*địa)"),
+            ("GEOGRAPHY", r"(?:môn(?:\s+thi|\s+kiểm\s+tra)?|bài\s+thi)\s*[:\-–—]?\s*địa\s*l[íy]"),
+            ("CIVIC_EDUCATION", r"(?:môn(?:\s+thi|\s+kiểm\s+tra)?|bài\s+thi)\s*[:\-–—]?\s*(?:giáo\s*dục\s*công\s*dân|gdcd|giáo\s*dục\s*kinh\s*tế\s*và\s*pháp\s*luật)"),
+            ("MATHEMATICS", r"(?:môn(?:\s+thi|\s+kiểm\s+tra)?|bài\s+thi)\s*[:\-–—]?\s*toán(?:\s*học)?"),
+        ]
+        for h_subj, h_pat in header_explicit_map:
+            if re.search(h_pat, header_sample) and h_subj in subject_scores:
+                subject_scores[h_subj] += 45.0
+                matched_terms_by_subject[h_subj].insert(0, "Tiêu đề môn thi trên đầu đề")
+                break
+
         if ExamType.COMPETITIVE_PROGRAMMING in pass2.candidate_exam_types:
             subject_scores["INFORMATICS"] += 40.0
             matched_terms_by_subject["INFORMATICS"].append("Cấu trúc: Giới hạn Thời gian/Bộ nhớ & Subtasks")

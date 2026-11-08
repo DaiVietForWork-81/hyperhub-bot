@@ -84,30 +84,30 @@ def format_bytes_to_human(size_bytes: int | float) -> str:
 
 
 class JumpButtonView(discord.ui.View):
-    """View chứa nút bấm chuyển tiếp nhanh tới bài đăng trong thư mục phân loại."""
+    """View chứa nút bấm chuyển tiếp nhanh tới Kho Đề Web (không tiết lộ kênh lưu trữ nội bộ)."""
 
-    def __init__(self, jump_url: str):
+    def __init__(self, jump_url: str | None = None):
         super().__init__(timeout=None)
         self.add_item(
             discord.ui.Button(
-                label="📖 Xem Đề Trong Thư Mục",
+                label="🌐 Xem Trong Kho Đề Web",
                 style=discord.ButtonStyle.link,
-                url=jump_url,
-                emoji="📂",
+                url="https://orbit-psi-black.vercel.app/#vault",
+                emoji="📚",
             )
         )
 
 
-class FeedbackModal(discord.ui.Modal, title="Góp Ý / Huấn Luyện Lại Môn Học"):
+class FeedbackModal(discord.ui.Modal, title="Góp Ý Chỉnh Sửa Phân Loại Đề"):
     corrected_subj = discord.ui.TextInput(
-        label="Môn học chính xác",
+        label="Môn học / Phân loại chính xác",
         placeholder="Ví dụ: TOÁN HỌC, VẬT LÝ, HÓA HỌC, TIẾNG ANH, TIN HỌC...",
         max_length=50,
         required=True,
     )
     notes = discord.ui.TextInput(
-        label="Lý do / Căn cứ nhận diện",
-        placeholder="Ví dụ: Đề chứa nhiều công thức đạo hàm, tích phân thuộc chương trình lớp 12...",
+        label="Ghi chú chi tiết (Khối lớp / Loại đề)",
+        placeholder="Ví dụ: Đề thi thử THPT môn Vật lí lớp 12...",
         style=discord.TextStyle.paragraph,
         max_length=500,
         required=False,
@@ -121,7 +121,7 @@ class FeedbackModal(discord.ui.Modal, title="Góp Ý / Huấn Luyện Lại Môn
     async def on_submit(self, interaction: discord.Interaction):
         try:
             from DocInspector.active_learning import ActiveLearningEngine
-            res = ActiveLearningEngine.record_feedback(
+            ActiveLearningEngine.record_feedback(
                 file_name=self.file_name,
                 corrected_subject=self.corrected_subj.value.strip(),
                 previous_subject=self.prev_subject,
@@ -129,13 +129,9 @@ class FeedbackModal(discord.ui.Modal, title="Góp Ý / Huấn Luyện Lại Môn
                 notes=self.notes.value.strip() if self.notes.value else "",
                 auto_retrain=True,
             )
-            retrain_info = ""
-            if res.get("retrain_metrics"):
-                m = res["retrain_metrics"]
-                retrain_info = f"\n🔄 *Đã hoàn tất 1 Epoch hiệu chuẩn: Loss = `{m.get('total_loss', 0.0)}` | Độ chính xác = `{m.get('subject_accuracy', 100)}%`*"
             await interaction.response.send_message(
-                f"✅ **ĐÃ GHI NHẬN VÀ HUẤN LUYỆN LẠI!**\n"
-                f"Hệ thống đã cập nhật trọng số cho môn **{self.corrected_subj.value.upper()}**.{retrain_info}",
+                f"✅ **ĐÃ GHI NHẬN GÓP Ý PHÂN LOẠI!**\n"
+                f"Cảm ơn bạn đã xác nhận thông tin phân loại môn **{self.corrected_subj.value.upper()}**.",
                 ephemeral=True,
             )
         except Exception as e:
@@ -143,96 +139,11 @@ class FeedbackModal(discord.ui.Modal, title="Góp Ý / Huấn Luyện Lại Môn
 
 
 class DocInspectorAuditView(discord.ui.View):
-    """View cung cấp nút bấm xem Bằng Chứng Minh Bạch Hóa (Audit Trail) và Phản hồi huấn luyện."""
+    """View cung cấp nút bấm Góp ý phân loại tài liệu."""
 
     def __init__(self, report: Any):
         super().__init__(timeout=None)
         self.report = report
-
-    @discord.ui.button(label="🔍 Bằng Chứng Thẩm Định", style=discord.ButtonStyle.secondary, custom_id="doc_audit_btn")
-    async def show_audit_trail(self, interaction: discord.Interaction, button: discord.ui.Button):
-        try:
-            from DocInspector.explainability import ExplainabilityEngine
-            dossier = ExplainabilityEngine.generate_dossier(self.report)
-            
-            emb = discord.Embed(
-                title=f"🔍 Hồ Sơ Bạch Hóa: {dossier.file_name}",
-                description=f"⏱️ **Thời gian xử lý:** `{dossier.execution_time_ms:.2f} ms` *(100% Thuật toán / Zero AI)*\n"
-                            f"📌 **Kết luận:** `{dossier.verdict}` — {dossier.verdict_explanation}",
-                color=0x3498DB if not dossier.is_spoofed else 0xE74C3C,
-            )
-            st = dossier.subject_trail
-            tokens_str = ", ".join(f"`{t.token}` (x{t.occurrence_count})" for t in st.evidence_tokens[:8]) or "Định dạng cấu trúc"
-            emb.add_field(
-                name="📚 Minh Bạch Môn Học",
-                value=f"• **Môn:** `{st.chosen_subject.value}` (Tin cậy: `{st.confidence*100:.1f}%`)\n"
-                      f"• **Điểm Top 1:** `{st.top_score:.1f}` | **Khoảng cách Top 2:** `+{st.margin:.1f}`\n"
-                      f"• **Thuật ngữ kích hoạt:** {tokens_str}",
-                inline=False,
-            )
-            qs = dossier.questions_summary
-            emb.add_field(
-                name="📝 Bóc Tách Câu Hỏi & Nhận Thức",
-                value=f"• **Tổng số câu:** `{qs.get('total_questions', 0)}`\n"
-                      f"• **Độ khó ước lượng:** `{qs.get('difficulty_index', 0)}/10.0`\n"
-                      f"• **Chuẩn Bộ GD&ĐT 2025:** `{'ĐẠT' if dossier.moet_2025_trail.get('compliant') else 'KHÔNG / DẠNG KHÁC'}`",
-                inline=False,
-            )
-            if dossier.is_spoofed:
-                emb.add_field(
-                    name="⚠️ Cảnh Báo Giả Mạo Tên Tệp",
-                    value=f"```{dossier.spoof_audit or 'Nội dung tệp lệch hoàn toàn so với tên tệp'}```",
-                    inline=False,
-                )
-            emb.set_footer(text="DocInspector Non-AI Explainable Engine • 100% Minh Bạch")
-            await interaction.response.send_message(embed=emb, ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Không thể tạo hồ sơ kiểm toán: `{e}`", ephemeral=True)
-
-    @discord.ui.button(label="🏛️ Dự Thảo Thẩm Định 3+1", style=discord.ButtonStyle.primary, custom_id="doc_quorum_btn")
-    async def show_quorum_draft(self, interaction: discord.Interaction, button: discord.ui.Button):
-        try:
-            qa = getattr(self.report, "quorum_arbitration", None)
-            dossier_md = getattr(self.report, "draft_dossier_markdown", None)
-            
-            if not qa and hasattr(self.report, "pass1") and getattr(self.report.pass1, "raw_text", None):
-                from DocInspector.consensus_engine import QuorumArbitrationEngine
-                res = QuorumArbitrationEngine.inspect(self.report.pass1.raw_text, file_name=getattr(self.report, "file_name", ""))
-                qa = res.to_dict()
-                dossier_md = res.draft_dossier_markdown
-
-            if not qa:
-                await interaction.response.send_message("ℹ️ Tài liệu đã được xác thực qua kênh mặc định.", ephemeral=True)
-                return
-
-            is_unanimous = qa.get("is_unanimous", True)
-            badge = "🟢 ĐỒNG THUẬN TUYỆT ĐỐI (3/3)" if is_unanimous else "⚖️ TRỌNG TÀI ĐỐI SOÁT (PASS 4)"
-            
-            emb = discord.Embed(
-                title=f"🏛️ Dự Thảo Thẩm Định: {qa.get('file_name', 'Tài liệu')}",
-                description=f"**Trạng thái biểu quyết:** `{badge}`\n"
-                            f"**Môn kết luận:** `{qa.get('final_subject_vi', 'Chung')}` | **Khối:** `{qa.get('final_grade_vi', 'Chung')}`",
-                color=0x2ECC71 if is_unanimous else 0xF39C12,
-            )
-
-            scans = qa.get("scans", [])
-            scans_text = []
-            for s in scans:
-                icon = "⚖️" if s.get("pass_number") == 4 else "🔹"
-                scans_text.append(f"{icon} **{s.get('pass_name')}:** `{s.get('subject_vi')}` ({s.get('confidence', 0)*100:.0f}%)")
-            
-            if scans_text:
-                emb.add_field(name="🗳️ Biểu Quyết Các Lần Quét", value="\n".join(scans_text), inline=False)
-
-            if not is_unanimous and qa.get("conflict_summary"):
-                emb.add_field(name="⚠️ Giải Trình Bất Đồng", value=qa.get("conflict_summary")[:1024], inline=False)
-                if qa.get("arbitration_rationale"):
-                    emb.add_field(name="⚖️ Phân Xử Của Trọng Tài", value=qa.get("arbitration_rationale")[:1024], inline=False)
-
-            emb.set_footer(text="Hội đồng Trọng tài 3+1 • Zero-AI Heuristic Engine")
-            await interaction.response.send_message(embed=emb, ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Không thể tạo dự thảo thẩm định: `{e}`", ephemeral=True)
 
     @discord.ui.button(label="🔄 Góp Ý Phân Loại", style=discord.ButtonStyle.secondary, custom_id="doc_feedback_btn")
     async def open_feedback_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -244,8 +155,12 @@ class DocInspectorAuditView(discord.ui.View):
 
 
 def format_rich_exam_metadata(report: Any) -> str:
-    """Định dạng siêu dữ liệu đề thi chi tiết (năm học, trường, thời gian, mã đề, kỳ thi, cấu trúc, chuyên đề)."""
+    """Định dạng siêu dữ liệu đề thi chi tiết qua 4 bước kiểm tra tránh hiểu lầm."""
     extra = ""
+    if hasattr(report, 'detailed_exam_track') and report.detailed_exam_track:
+        extra += f"\n📌 **Loại đề:** `{report.detailed_exam_track}`"
+    if hasattr(report, 'grade_level_label_vi') and report.grade_level_label_vi:
+        extra += f"\n🎓 **Khối lớp:** `{report.grade_level_label_vi}`"
     if hasattr(report, 'academic_year') and report.academic_year:
         extra += f"\n📅 **Năm học:** `{report.academic_year}`"
     if hasattr(report, 'school_or_department') and report.school_or_department:
@@ -356,30 +271,37 @@ class SubmitDocModal(discord.ui.Modal, title="📤 Nộp Đường Dẫn Tài Li
 
 
 class DocumentIntakeControlView(discord.ui.View):
-    """Bảng điều khiển tương tác thường trực tại kênh nộp tài liệu."""
+    """Bảng điều khiển tương tác thường trực tại kênh nộp tài liệu (chuyển tiếp lên Web Portal)."""
 
     def __init__(self, cog: DocumentIntakeCog | None = None):
         super().__init__(timeout=None)
         self.cog = cog
-
-    @discord.ui.button(
-        label="📤 Nộp Link / Google Drive",
-        style=discord.ButtonStyle.primary,
-        custom_id="btn_doc_intake_submit_link",
-        emoji="🔗",
-    )
-    async def btn_submit_link(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        cog = self.cog or interaction.client.get_cog("DocumentIntakeCog")
-        if not cog:
-            await interaction.response.send_message("❌ Hệ thống chưa sẵn sàng.", ephemeral=True)
-            return
-        await interaction.response.send_modal(SubmitDocModal(cog))
+        # Nút chuyển tiếp trực tiếp sang Web Portal để nộp tài liệu
+        self.add_item(
+            discord.ui.Button(
+                label="🌐 Mở Web Đóng Góp Đề Thi",
+                url="https://orbit-psi-black.vercel.app/#vault",
+                style=discord.ButtonStyle.link,
+                emoji="📤",
+                row=0,
+            )
+        )
+        self.add_item(
+            discord.ui.Button(
+                label="🚀 Mở Bảng Điều Khiển (Hub)",
+                url="https://orbit-psi-black.vercel.app/hub",
+                style=discord.ButtonStyle.link,
+                emoji="✨",
+                row=0,
+            )
+        )
 
     @discord.ui.button(
         label="📊 Thống Kê Kho Đề & Dung Lượng",
-        style=discord.ButtonStyle.success,
+        style=discord.ButtonStyle.secondary,
         custom_id="btn_doc_intake_stats",
         emoji="💾",
+        row=1,
     )
     async def btn_stats(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         cog = self.cog or interaction.client.get_cog("DocumentIntakeCog")
@@ -411,7 +333,7 @@ class DocumentIntakeCog(commands.Cog):
             self._sync_turso_task.cancel()
 
     async def _turso_pending_sync_loop(self) -> None:
-        """Lắng nghe và tự động đăng các đề thi được nộp lên Turso khi bot offline."""
+        """Chu kỳ 45 giây: Đồng bộ đề thi từ Turso Cloud + Gửi toàn bộ file đã list về Cloud Model (550B) để đọc và phân tích sâu."""
         await self.bot.wait_until_ready()
         await asyncio.sleep(5)  # Chờ 5s cho bot hoàn tất kết nối Discord
         while not self.bot.is_closed():
@@ -419,7 +341,148 @@ class DocumentIntakeCog(commands.Cog):
                 await self.sync_pending_turso_documents()
             except Exception as e:
                 log.debug("Lỗi trong vòng lặp sync Turso: %s", e)
-            await asyncio.sleep(45)  # Quét mỗi 45 giây (tối ưu hạn ngạch 500M reads của Turso)
+            try:
+                await self.run_45s_batch_cloud_analysis()
+            except Exception as e:
+                log.debug("Lỗi trong vòng lặp phân tích lô 45 giây: %s", e)
+            await asyncio.sleep(45)  # Cứ 45 giây gom và phân tích toàn bộ file đã list
+
+    async def run_45s_batch_cloud_analysis(self) -> int:
+        """
+        Cứ 45 giây: Tổng hợp tất cả các file mà Bot đã list/thu thập được (trong hàng đợi 45s
+        hoặc trong documents_archive chưa qua bước thẩm định sâu) để gửi về Model 550B đọc & phân loại.
+        """
+        from DocInspector.cloud_verifier import CloudExamVerifier
+        from database.turso_client import turso_db
+
+        # 1. Rà soát các file mới được list trong SQLite local chưa có nhãn CLOUD_DEEP_VERIFIED
+        if hasattr(self.bot, "db"):
+            try:
+                unverified_rows = await self.bot.db.fetchall(
+                    """
+                    SELECT id, file_name, COALESCE(raw_text, ''), subject, estimated_level
+                    FROM documents_archive
+                    WHERE (quorum_status IS NULL OR quorum_status NOT IN ('CLOUD_DEEP_VERIFIED', 'UNANIMOUS_3_3'))
+                    ORDER BY id DESC
+                    LIMIT 12
+                    """
+                )
+                for r_id, r_fname, r_text, r_subj, r_lvl in unverified_rows:
+                    CloudExamVerifier.enqueue_for_45s_batch(
+                        doc_id=r_id,
+                        file_name=r_fname or f"doc_{r_id}.pdf",
+                        raw_text=r_text or f"Tài liệu: {r_fname}",
+                        metadata={"source": "sqlite", "old_subject": r_subj, "old_level": r_lvl},
+                    )
+            except Exception as e:
+                log.debug("Bỏ qua quét SQLite trong chu kỳ 45s: %s", e)
+
+        # 2. Rà soát các file mới trên Turso Cloud
+        if turso_db.is_configured:
+            try:
+                turso_rows = await turso_db.fetchall(
+                    """
+                    SELECT id, file_name, COALESCE(raw_text, '') AS raw_text, subject, estimated_level
+                    FROM documents_archive
+                    WHERE (verdict IS NULL OR verdict != 'CLOUD_DEEP_VERIFIED')
+                    ORDER BY id DESC
+                    LIMIT 12
+                    """
+                )
+                for tr in turso_rows:
+                    t_id = tr.get("id")
+                    t_fname = tr.get("file_name") or f"doc_{t_id}.pdf"
+                    t_text = tr.get("raw_text") or f"Tài liệu: {t_fname}"
+                    if t_id:
+                        CloudExamVerifier.enqueue_for_45s_batch(
+                            doc_id=t_id,
+                            file_name=t_fname,
+                            raw_text=t_text,
+                            metadata={"source": "turso"},
+                        )
+            except Exception as e:
+                log.debug("Bỏ qua quét Turso trong chu kỳ 45s: %s", e)
+
+        # 3. Đẩy toàn bộ lô đã gom trong 45s qua lên Model 550B (timeout < 60s/file)
+        completed = await asyncio.to_thread(CloudExamVerifier.flush_45s_batch, 16)
+        if not completed:
+            return 0
+
+        updated_count = 0
+        for item in completed:
+            doc_id = item.get("doc_id")
+            v = item.get("verified") or {}
+            new_subj = str(v.get("subject") or "").upper()
+            new_grade = str(v.get("grade_level") or "").strip()
+            new_detailed = str(v.get("detailed_exam_track") or "").strip()
+            new_track = str(v.get("exam_track") or "").upper()
+            new_school = v.get("school_or_department")
+            new_year = v.get("academic_year")
+            new_desc = str(v.get("exam_description") or "").strip()
+
+            est_level = new_grade
+            if new_detailed and new_detailed not in est_level:
+                est_level = f"{new_grade} ({new_detailed})" if new_grade else new_detailed
+
+            subj_to_set = new_subj if (new_subj and new_subj != "GENERAL") else ""
+
+            if isinstance(doc_id, int) or (isinstance(doc_id, str) and doc_id.isdigit()):
+                num_id = int(doc_id)
+                if hasattr(self.bot, "db"):
+                    try:
+                        await self.bot.db.execute(
+                            """
+                            UPDATE documents_archive
+                            SET subject = COALESCE(NULLIF(?, ''), subject),
+                                estimated_level = COALESCE(NULLIF(?, ''), estimated_level),
+                                exam_track = COALESCE(NULLIF(?, ''), exam_track),
+                                school_or_department = COALESCE(NULLIF(?, ''), school_or_department),
+                                academic_year = COALESCE(NULLIF(?, ''), academic_year),
+                                notes = COALESCE(NULLIF(?, ''), notes),
+                                quorum_status = 'CLOUD_DEEP_VERIFIED',
+                                verdict = 'CLOUD_DEEP_VERIFIED'
+                            WHERE id = ?
+                            """,
+                            subj_to_set,
+                            est_level,
+                            new_track,
+                            new_school if (new_school and str(new_school).lower() != "null") else "",
+                            new_year if (new_year and str(new_year).lower() != "null") else "",
+                            new_desc,
+                            num_id,
+                        )
+                    except Exception:
+                        pass
+
+                if turso_db.is_configured:
+                    try:
+                        await turso_db.execute(
+                            """
+                            UPDATE documents_archive
+                            SET subject = COALESCE(NULLIF(?, ''), subject),
+                                estimated_level = COALESCE(NULLIF(?, ''), estimated_level),
+                                exam_track = COALESCE(NULLIF(?, ''), exam_track),
+                                school_or_department = COALESCE(NULLIF(?, ''), school_or_department),
+                                academic_year = COALESCE(NULLIF(?, ''), academic_year),
+                                notes = COALESCE(NULLIF(?, ''), notes),
+                                verdict = 'CLOUD_DEEP_VERIFIED'
+                            WHERE id = ?
+                            """,
+                            subj_to_set,
+                            est_level,
+                            new_track,
+                            new_school if (new_school and str(new_school).lower() != "null") else "",
+                            new_year if (new_year and str(new_year).lower() != "null") else "",
+                            new_desc,
+                            num_id,
+                        )
+                    except Exception:
+                        pass
+                updated_count += 1
+
+        if updated_count > 0:
+            log.info("✅ [Chu kỳ 45s] Đã đọc & cập nhật phân loại chuyên sâu cho %d tài liệu.", updated_count)
+        return updated_count
 
     async def sync_pending_turso_documents(self) -> int:
         """Đồng bộ các đề thi nộp từ Web lúc Bot offline từ Turso Cloud sang các kênh Discord."""
@@ -913,8 +976,8 @@ class DocumentIntakeCog(commands.Cog):
                         subject, title, file_name, file_size_bytes, file_type,
                         estimated_level, question_count, page_count, author_id,
                         author_name, channel_id, message_id, jump_url, timestamp, file_hash, content_hash, raw_text,
-                        verdict, exam_track, confidence, academic_year, school_or_department, quorum_status
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        notes, verdict, exam_track, confidence, academic_year, school_or_department, quorum_status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     subject_name,
                     report.file_name,
@@ -933,6 +996,7 @@ class DocumentIntakeCog(commands.Cog):
                     file_hash,
                     c_hash,
                     raw_text,
+                    getattr(report, "human_summary", ""),
                     _verdict,
                     _track,
                     _conf,
@@ -1113,15 +1177,19 @@ class DocumentIntakeCog(commands.Cog):
 
         indexed_count = 0
 
-        # 1. Quét tệp đính kèm (Attachments)
+        # 1. Quét tệp đính kèm (Attachments) — hỗ trợ gửi nhiều tệp cùng lúc (miễn mỗi tệp <= 25MB)
         if message.attachments:
             for att in message.attachments:
+                if att.size and att.size > 25 * 1024 * 1024:
+                    continue
                 ext = Path(att.filename).suffix.lower()
                 if ext not in [".pdf", ".docx", ".doc", ".txt", ".cpp", ".py", ".zip", ".rar", ".7z", ".png", ".jpg", ".jpeg", ".webp", ".bmp"]:
                     continue
 
                 try:
                     data = await att.read()
+                    if len(data) > 25 * 1024 * 1024:
+                        continue
                     file_hash = fast_sha256(data) if data else None
 
                     # Kiểm tra trùng lặp bằng file_hash
@@ -1137,6 +1205,7 @@ class DocumentIntakeCog(commands.Cog):
                     level_str = "Tài liệu"
                     q_count = 0
                     file_type = ext.replace(".", "").upper()
+                    raw_text_extracted = ""
 
                     # Phân loại bằng HybridExamClassifier
                     if HybridExamClassifier:
@@ -1150,6 +1219,7 @@ class DocumentIntakeCog(commands.Cog):
                             level_str = "Chung ( chung cho tất cả khối )"
                         q_count = res.question_count
                         file_type = res.raw_file_type
+                        raw_text_extracted = getattr(res, "raw_text", "") or ""
 
                     now_iso = message.created_at.isoformat()
                     author_name = message.author.display_name or message.author.name
@@ -1161,8 +1231,8 @@ class DocumentIntakeCog(commands.Cog):
                         INSERT INTO documents_archive (
                             subject, title, file_name, file_size_bytes, file_type,
                             estimated_level, question_count, page_count, author_id,
-                            author_name, channel_id, message_id, jump_url, timestamp, file_hash
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            author_name, channel_id, message_id, jump_url, timestamp, file_hash, raw_text
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         subject_name,
                         att.filename,
@@ -1179,7 +1249,22 @@ class DocumentIntakeCog(commands.Cog):
                         message.jump_url,
                         now_iso,
                         file_hash,
+                        raw_text_extracted[:50000] if raw_text_extracted else "",
                     )
+                    try:
+                        from DocInspector.cloud_verifier import CloudExamVerifier
+                        last_row = await self.bot.db.fetchone(
+                            "SELECT id FROM documents_archive WHERE file_hash = ? ORDER BY id DESC LIMIT 1",
+                            file_hash,
+                        )
+                        if last_row and raw_text_extracted:
+                            CloudExamVerifier.enqueue_for_45s_batch(
+                                doc_id=last_row[0],
+                                file_name=att.filename,
+                                raw_text=raw_text_extracted,
+                            )
+                    except Exception:
+                        pass
                     indexed_count += 1
                     log.info(
                         "Đã lập chỉ mục đề thi '%s' từ kênh #%s (Người gửi: %s, Môn: %s)",
@@ -1367,65 +1452,29 @@ class DocumentIntakeCog(commands.Cog):
         }
 
     async def build_intake_panel_embeds(self) -> list[discord.Embed]:
-        """Tạo 2 Embeds hướng dẫn nộp tài liệu chuẩn và bảng thống kê dung lượng kho đề."""
+        """Tạo Embed hướng dẫn nộp tài liệu chuẩn và thống kê kho đề gọn gàng."""
         stats = await self.get_storage_statistics()
         total_size_human = format_bytes_to_human(stats["grand_total_bytes"])
         total_docs_count = stats["grand_total_items"]
 
-        # Embed 1: Hướng dẫn chi tiết cách thức nộp tài liệu
         guide_desc = (
-            "Chào mừng bạn đến với **Trạm Tiếp Nhận & Phân Loại Đề Thi Tự Động**!\n"
-            "Hệ thống ứng dụng công nghệ **DocInspector Engine** (< 25ms, 100% Deterministic) "
-            "để tự động quét virus, nhận diện môn học, khối lớp, thể loại và lưu trữ vào đúng chuyên mục.\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "### 🚀 CÁCH THỨC NỘP TÀI LIỆU VÀO KÊNH\n\n"
-            "📂 **Cách 1: Gửi tệp đính kèm trực tiếp (Khuyên dùng)**\n"
-            "> • **Kéo & thả** hoặc chọn gửi tệp (`.pdf`, `.docx`, `.doc`, `.txt`...) trực tiếp vào khung chat kênh này.\n"
-            "> • 🔒 *Tin nhắn của bạn sẽ tự động được xóa ngay sau khi tiếp nhận để giữ kênh luôn sạch sẽ và bảo mật dữ liệu.*\n\n"
-            "🔗 **Cách 2: Gửi liên kết / Google Drive**\n"
-            "> • Dán trực tiếp đường link Google Drive (để chế độ công khai) hoặc link trang web học tập vào khung chat.\n"
-            "> • Hoặc bấm nút **'🔗 Nộp Link / Google Drive'** bên dưới để mở Form nhập kèm ghi chú.\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "### 🎯 QUY TRÌNH PHÂN LOẠI 4 CHIỀU TOÀN DIỆN\n"
-            "Mỗi tài liệu gửi lên sẽ được hệ thống tự động thẩm định theo 4 tiêu chí:\n"
-            "1. 📚 **Môn học:** Tự động phát hiện Toán, Tin, Lý, Hóa, Sinh, Văn, Anh, Sử - Địa, GDCD...\n"
-            "2. 🎓 **Khối lớp:** Lớp 12, 11, 10, 9, 8, 7, 6, THCS, THPT, Đội tuyển/Olympic, Đại học.\n"
-            "3. 🏷️ **Thể loại:** `thường` / `hsg` / `chuyên` *(Quy tắc: thường < hsg < chuyên, hsg là cấp độ dễ hơn chuyên)*.\n"
-            "4. 🛡️ **4 Trạng thái thẩm định:**\n"
-            "   • `Xác minh (thấy ổn)`: Đề thi chuẩn, nội dung và cấu trúc rõ ràng.\n"
-            "   • `Chưa rõ ràng`: Nhận diện được đề nhưng chưa chắc chắn hoàn toàn (cần đối soát thêm).\n"
-            "   • `Không rõ ràng`: Xem được đề nhưng không rõ năm/trường hoặc cấu trúc khuyết.\n"
-            "   • `Không xác minh`: File lỗi/rỗng hoặc web chặn bot (*báo không rõ nguồn gốc*).\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "📁 **Kho học liệu số:** Sau khi thẩm định, đề thi được tự động đồng bộ lên **Orbit Web Portal** (https://orbit-psi-black.vercel.app/#vault) để mọi người có thể tra cứu và làm bài trực tuyến.\n"
-            "📩 **Phản hồi:** Kết quả thẩm định chi tiết và link mở đề thi sẽ được gửi phản hồi ngay cho bạn!"
+            "Đóng góp đề thi & tài liệu học tập trực tiếp trên **Orbit Web Portal** để nhận vinh danh tác giả.\n\n"
+            "🌐 **Cổng nộp đề trực tuyến:** **https://orbit-psi-black.vercel.app/#submit_doc**\n\n"
+            "**Quyền lợi khi đóng góp (Chỉ cần liên kết tài khoản Discord, không cần xác minh email):**\n"
+            "• 👤 **Vinh danh Credit:** Tên & Avatar Discord hiển thị trực tiếp trên thẻ đề thi.\n"
+            "• ✍️ **Danh hiệu chính thức:** Tự động cấp role <@&1534128847157461034> trên máy chủ.\n\n"
+            f"📊 **Trạng thái kho hiện tại:** `{total_docs_count:,} tài liệu` (`{total_size_human}`) • "
+            "Hỗ trợ `.pdf`, `.docx`, `.doc`, `.txt` & Google Drive."
         )
 
         embed_guide = discord.Embed(
-            title="📤 HƯỚNG DẪN NỘP TÀI LIỆU & ĐỀ THI TỰ ĐỘNG",
+            title="📤 TRẠM ĐÓNG GÓP ĐỀ THI & TÀI LIỆU HỌC TẬP",
             description=guide_desc,
-            color=0x5865F2,
+            color=0x9B5CFF,
         )
+        embed_guide.set_footer(text="Orbit | Vietnam • Kho Đề Thi & Tài Liệu Học Tập Mở")
 
-        # Embed 2: Thống kê kho dữ liệu hiện tại
-        stats_desc = (
-            f"📊 **TỔNG QUAN KHO ĐỀ THI & DUNG LƯỢNG LƯU TRỮ HIỆN TẠI:**\n\n"
-            f"• 📚 **Tổng số lượng đề & tài liệu:** `{total_docs_count:,} tài liệu`\n"
-            f"• 💾 **Tổng dung lượng toàn bộ kho:** `{total_size_human}`\n"
-            f"• 🏆 **Đề đấu trường CP Arena:** `{stats['cp_problems_count']:,} đề` ({format_bytes_to_human(stats['cp_storage_bytes'])})\n"
-            f"• 📂 **Tài liệu các môn học:** `{stats['total_docs']:,} tệp` ({format_bytes_to_human(stats['total_doc_bytes'])})\n\n"
-            "📑 **Định dạng được hỗ trợ:** `.pdf`, `.docx`, `.doc`, `.txt`, `.cpp`, `.py`\n"
-            "🛡️ **An toàn:** Tự động lọc virus, mã độc, phishing và tệp giả mạo."
-        )
-
-        embed_stats = discord.Embed(
-            title="📊 THỐNG KÊ KHO DỮ LIỆU & BẢO MẬT",
-            description=stats_desc,
-            color=0x2ECC71,
-        )
-        embed_stats.set_footer(text=f"DocInspector Engine • Sub-25ms Non-AI • Dung lượng hiện tại: {total_size_human}")
-
-        return [embed_guide, embed_stats]
+        return [embed_guide]
 
     async def build_intake_panel_embed(self) -> discord.Embed:
         """Tương thích ngược: trả về embed hướng dẫn đầu tiên."""
@@ -1440,17 +1489,10 @@ class DocumentIntakeCog(commands.Cog):
         embed = discord.Embed(
             title="📊 THỐNG KÊ CHI TIẾT KHO ĐỀ & DUNG LƯỢNG",
             description=(
-                f"💾 **Tổng dung lượng toàn bộ kho:** `{total_size_human}`\n"
-                f"📚 **Tổng số lượng bài/tệp:** `{stats['grand_total_items']:,} tài liệu`\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                f"💾 **Tổng dung lượng kho:** `{total_size_human}`\n"
+                f"📚 **Tổng số lượng tài liệu:** `{stats['grand_total_items']:,} đề thi`\n"
             ),
             color=0x2ECC71,
-        )
-
-        embed.add_field(
-            name="🏆 Đấu Trường Thuật Toán CP Arena",
-            value=f"• Số bài: `{stats['cp_problems_count']:,} đề`\n• Dung lượng: `{format_bytes_to_human(stats['cp_storage_bytes'])}`",
-            inline=False,
         )
 
         subject_icons = {
@@ -1478,11 +1520,11 @@ class DocumentIntakeCog(commands.Cog):
         else:
             embed.add_field(
                 name="📂 Tài Liệu Chuyên Môn",
-                value="*Chưa có tài liệu nào được nộp vào database.*",
+                value="*Chưa có tài liệu nào được lưu trữ.*",
                 inline=False,
             )
 
-        embed.set_footer(text="Hệ Thống Tự Động Phân Loại Đề Thi • Orbit")
+        embed.set_footer(text="Orbit | Vietnam • Thống kê Kho Đề Thi")
         return embed
 
     async def clean_intake_channel(self, channel: discord.TextChannel) -> None:
@@ -1500,7 +1542,7 @@ class DocumentIntakeCog(commands.Cog):
                 if not panel_msg:
                     async for m in channel.history(limit=50):
                         if m.author.id == self.bot.user.id and m.embeds:
-                            if any("HƯỚNG DẪN NỘP TÀI LIỆU" in (e.title or "") for e in m.embeds):
+                            if any(("NỘP" in (e.title or "").upper() or "ĐÓNG GÓP" in (e.title or "").upper() or "HƯỚNG DẪN" in (e.title or "").upper()) for e in m.embeds):
                                 panel_msg = m
                                 self._panel_message_id = m.id
                                 break
@@ -1580,7 +1622,7 @@ class DocumentIntakeCog(commands.Cog):
                 existing_panel = None
                 try:
                     async for m in channel.history(limit=5):
-                        if m.author == self.bot.user and m.embeds and ("NỘP TÀI LIỆU" in (m.embeds[0].title or "") or "HƯỚNG DẪN" in (m.embeds[0].title or "")):
+                        if m.author == self.bot.user and m.embeds and any(k in (m.embeds[0].title or "").upper() for k in ("NỘP", "ĐÓNG GÓP", "HƯỚNG DẪN")):
                             existing_panel = m
                             break
                 except Exception:
@@ -1696,8 +1738,7 @@ class DocumentIntakeCog(commands.Cog):
                         submission_reply_message=(
                             f"🔁 **TÀI LIỆU TRÙNG LẶP!**\n"
                             f"Tệp `{file_name or 'này'}` đã được nộp trước đó bởi **{dup_author}** vào `{dup_time}`.\n"
-                            f"🔗 **Bài đăng gốc:** {dup_jump}\n\n"
-                            f"*Hệ thống đã phát hiện trùng lặp bằng SHA-256 hash: `{file_hash[:16]}...`*"
+                            f"🔗 **Bài đăng gốc:** {dup_jump}"
                         ),
                     )
                     # Return a minimal dummy report for duplicates
@@ -1751,8 +1792,7 @@ class DocumentIntakeCog(commands.Cog):
                     routing.submission_reply_message = (
                         f"🔁 **TÀI LIỆU TRÙNG NỘI DUNG ĐỀ THI!**\n"
                         f"Nội dung văn bản đề này hoàn toàn trùng khớp với đề **{dup_title}** đã được nộp trước đó bởi **{dup_author}** vào `{dup_time}`.\n"
-                        f"🔗 **Bài đăng gốc:** {dup_jump}\n\n"
-                        f"*Hệ thống đã phát hiện trùng lặp bằng Layer 2 Semantic Content Hash: `{report.content_hash[:16]}...`*"
+                        f"🔗 **Bài đăng gốc:** {dup_jump}"
                     )
                     report.human_summary = f"Tài liệu trùng nội dung đề thi với bài đăng của {dup_author}"
                     return report, routing, None
@@ -1780,13 +1820,6 @@ class DocumentIntakeCog(commands.Cog):
 
                 post_content += format_rich_exam_metadata(report)
 
-                # Hiển thị kết quả Hội đồng Thẩm định 3+1
-                if hasattr(report, "quorum_arbitration") and report.quorum_arbitration:
-                    qa = report.quorum_arbitration
-                    if qa.get("is_unanimous"):
-                        post_content += "\n🏛️ **Hội đồng 3+1:** `🟢 Đồng thuận tuyệt đối (3/3)`"
-                    else:
-                        post_content += f"\n🏛️ **Hội đồng 3+1:** `⚖️ Trọng tài đối soát (Pass 4: {qa.get('final_subject_vi', 'Chung')})`"
 
                 try:
                     audit_view = DocInspectorAuditView(report)
@@ -1832,231 +1865,29 @@ class DocumentIntakeCog(commands.Cog):
 
         # TRƯỜNG HỢP A: Kênh tiếp nhận tài liệu (1535278288828633138)
         if message.channel.id == intake_channel_id:
-            # Nếu bot khác hoặc webhook nhắn vào kênh nộp tài liệu, xóa ngay lập tức
-            if message.author.bot:
-                try:
-                    await message.delete()
-                except Exception:
-                    pass
-                return
+            # Xóa ngay lập tức mọi tin nhắn gửi vào kênh nộp tài liệu (chỉ nộp trên Web)
+            try:
+                await message.delete()
+            except Exception:
+                pass
 
-            has_attachment = len(message.attachments) > 0
-            url_match = re.search(
-                r"https?://[^\s]+|(?:(?:drive|docs)\.google\.com|[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/[^\s]*",
-                message.content,
-            )
-
-            # 1. Tin nhắn chat thông thường (không có file đính kèm, không chứa liên kết)
-            if not has_attachment and not url_match:
+            if not message.author.bot:
+                warn_text = (
+                    f"⚠️ {message.author.mention}, nộp tài liệu hiện đã chuyển hoàn toàn lên **Orbit Web Portal** (không nộp trên Bot nữa).\n"
+                    f"👉 Vui lòng truy cập **https://orbit-psi-black.vercel.app/#vault** để nộp đề thi & tài liệu trực tuyến nhé!"
+                )
                 try:
-                    await message.delete()
+                    await message.channel.send(warn_text, delete_after=7.0)
                 except Exception:
                     pass
 
-                dm_sent = True
-                try:
-                    await message.author.send(
-                        "⚠️ **Kênh <#1535278288828633138> chỉ dành riêng để nộp tài liệu học tập & đề thi.**\n"
-                        "Vui lòng gửi kèm tệp (`.pdf`, `.docx`, `.png`, `.jpg`...) hoặc đường dẫn Google Drive / web để hệ thống tự động phân loại!"
-                    )
-                except Exception:
-                    dm_sent = False
-
-                if not dm_sent:
-                    try:
-                        await message.channel.send(
-                            f"⚠️ {message.author.mention}, vui lòng gửi tệp đính kèm (`.pdf`, `.docx`, `.png`, `.jpg`...) hoặc đường dẫn tài liệu học tập để hệ thống tiếp nhận và phân loại.",
-                            delete_after=6.0,
-                        )
-                    except Exception:
-                        pass
-
-                # Dọn dẹp toàn bộ tin nhắn thừa trong kênh ngầm
-                asyncio.create_task(self.clean_intake_channel(message.channel))
-                return
-
-            # 2. Xử lý khi có tệp đính kèm
-            if has_attachment:
-                # Đọc trước toàn bộ dữ liệu tệp đính kèm trước khi xóa tin nhắn
-                loaded_attachments: list[tuple[str, bytes]] = []
-                for att in message.attachments:
-                    try:
-                        data = await att.read()
-                        loaded_attachments.append((att.filename, data))
-                    except Exception as e:
-                        log.warning("Không thể đọc attachment %s: %s", att.filename, e)
-
-                # Xóa ngay tin nhắn nộp của người dùng để kênh luôn sạch sẽ
-                try:
-                    await message.delete()
-                except Exception:
-                    pass
-
-                failed_notifications: list[tuple[str, JumpButtonView | None]] = []
-                for file_name, file_bytes in loaded_attachments:
-                    try:
-                        report, routing, posted_msg = await self.process_and_route(
-                            guild=message.guild,
-                            author=message.author,
-                            file_path_or_bytes=file_bytes,
-                            file_name=file_name,
-                        )
-
-                        reply_text = (routing.submission_reply_message or "") + format_rich_exam_metadata(report)
-
-                        view = JumpButtonView(posted_msg.jump_url) if posted_msg else None
-
-                        try:
-                            await message.author.send(reply_text, view=view)
-                        except Exception:
-                            failed_notifications.append((reply_text, view))
-
-                        # Post thông báo trùng lặp vào kênh intake rồi xóa sau 10 giây
-                        if 'TRÙNG LẶP' in (routing.submission_reply_message or ''):
-                            try:
-                                dup_embed = discord.Embed(
-                                    title="🔁 Tài Liệu Trùng Lặp",
-                                    description=(
-                                        f"Tệp của **{message.author.display_name}** đã được nộp trước đó.\n"
-                                        f"Chi tiết đã được gửi riêng tư.\n"
-                                        f"*Tin nhắn này sẽ tự xóa sau 10 giây.*"
-                                    ),
-                                    color=0xE67E22,
-                                )
-                                dup_public_msg = await message.channel.send(embed=dup_embed)
-                                await asyncio.sleep(10)
-                                try:
-                                    await dup_public_msg.delete()
-                                except Exception:
-                                    pass
-                            except Exception:
-                                pass
-                    except Exception as e:
-                        log.exception("Lỗi khi xử lý file nộp %s: %s", file_name, e)
-                        err_text = f"❌ **Lỗi khi xử lý tệp '{file_name}':** `{e}`"
-                        try:
-                            await message.author.send(err_text)
-                        except Exception:
-                            failed_notifications.append((err_text, None))
-
-                # Nếu người dùng tắt DM máy chủ, hiển thị thông báo tạm thời rồi tự xóa sau 25s
-                for text, view in failed_notifications:
-                    try:
-                        await message.channel.send(
-                            f"{message.author.mention}\n{text}",
-                            view=view,
-                            delete_after=25.0,
-                        )
-                    except Exception:
-                        pass
-
-                # Dọn dẹp tất cả tin nhắn thừa trong kênh ngầm (không làm lag người dùng)
-                asyncio.create_task(self.clean_intake_channel(message.channel))
-                return
-
-            # 3. Xử lý khi gửi link URL / Google Drive trực tiếp trong chat
-            if url_match:
-                raw_url = AntivirusScanner.normalize_url(url_match.group(0))
-                try:
-                    await message.delete()
-                except Exception:
-                    pass
-
-                from services.gdrive_importer import is_valid_gdrive_url_or_id
-                if is_valid_gdrive_url_or_id(raw_url):
-                    try:
-                        success, msg, embed, posted_msg = await self.handle_gdrive_submission(
-                            guild=message.guild,
-                            author=message.author,
-                            gdrive_url=raw_url,
-                        )
-                        view = JumpButtonView(posted_msg.jump_url) if posted_msg else None
-                        try:
-                            if embed:
-                                await message.author.send(embed=embed, view=view)
-                            else:
-                                await message.author.send(msg, view=view)
-                        except Exception:
-                            try:
-                                if embed:
-                                    await message.channel.send(f"{message.author.mention}", embed=embed, view=view, delete_after=25.0)
-                                else:
-                                    await message.channel.send(f"{message.author.mention}\n{msg}", view=view, delete_after=25.0)
-                            except Exception:
-                                pass
-                    except Exception as ge:
-                        log.exception("Lỗi khi xử lý link Google Drive trong chat: %s", ge)
-                        try:
-                            await message.author.send(f"❌ Lỗi kiểm định link Google Drive: `{ge}`")
-                        except Exception:
-                            pass
-
-                    asyncio.create_task(self.clean_intake_channel(message.channel))
-                    return
-
-                failed_url_notifications: list[tuple[str, JumpButtonView | None]] = []
-                try:
-                    report, routing, posted_msg = await self.process_and_route(
-                        guild=message.guild,
-                        author=message.author,
-                        file_path_or_bytes=raw_url,
-                    )
-
-                    reply_text = (routing.submission_reply_message or "") + format_rich_exam_metadata(report)
-
-                    view = JumpButtonView(posted_msg.jump_url) if posted_msg else None
-
-                    try:
-                        await message.author.send(reply_text, view=view)
-                    except Exception:
-                        failed_url_notifications.append((reply_text, view))
-
-                    # Post thông báo trùng lặp vào kênh intake rồi xóa sau 10 giây
-                    if 'TRÙNG LẶP' in (routing.submission_reply_message or ''):
-                        try:
-                            dup_embed = discord.Embed(
-                                title="🔁 Tài Liệu Trùng Lặp",
-                                description=(
-                                    f"Tệp của **{message.author.display_name}** đã được nộp trước đó.\n"
-                                    f"Chi tiết đã được gửi riêng tư.\n"
-                                    f"*Tin nhắn này sẽ tự xóa sau 10 giây.*"
-                                ),
-                                color=0xE67E22,
-                            )
-                            dup_public_msg = await message.channel.send(embed=dup_embed)
-                            await asyncio.sleep(10)
-                            try:
-                                await dup_public_msg.delete()
-                            except Exception:
-                                pass
-                        except Exception:
-                            pass
-                except Exception as e:
-                    log.exception("Lỗi khi xử lý link nộp: %s", e)
-                    err_text = f"❌ **Lỗi khi xử lý liên kết '{raw_url}':** `{e}`"
-                    try:
-                        await message.author.send(err_text)
-                    except Exception:
-                        failed_url_notifications.append((err_text, None))
-
-                # Nếu người dùng tắt DM máy chủ, hiển thị thông báo tạm thời rồi tự xóa sau 25s
-                for text, view in failed_url_notifications:
-                    try:
-                        await message.channel.send(
-                            f"{message.author.mention}\n{text}",
-                            view=view,
-                            delete_after=25.0,
-                        )
-                    except Exception:
-                        pass
-
-                # Dọn dẹp tất cả tin nhắn thừa trong kênh ngầm (không làm lag người dùng)
-                asyncio.create_task(self.clean_intake_channel(message.channel))
-                return
+            asyncio.create_task(self.clean_intake_channel(message.channel))
+            return
 
         # TRƯỜNG HỢP B: Tin nhắn gửi trong các kênh thuộc Thư mục phân loại (1534147951797080174)
         channel_category_id = getattr(message.channel, "category_id", None)
-        if channel_category_id == category_id and (message.attachments or "http" in message.content):
+        doc_search_id = getattr(settings, "DOC_SEARCH_CHANNEL_ID", 1567532842617937931)
+        if channel_category_id == category_id and message.channel.id not in (intake_channel_id, doc_search_id) and (message.attachments or "http" in message.content):
             # 1. Tự động lập chỉ mục đề thi (cả đề do Bot gửi và do Admin/User gửi trực tiếp)
             try:
                 cnt = await self.index_message_document(message)
@@ -2068,21 +1899,20 @@ class DocumentIntakeCog(commands.Cog):
             except Exception as ie:
                 log.debug("Lỗi khi tự động lập chỉ mục tin nhắn trong Category: %s", ie)
 
-            # 2. Nếu là người dùng gửi trực tiếp (Admin), kiểm tra thêm Channel Compliance
+            # 2. Nếu là người dùng gửi trực tiếp (Admin), kiểm tra thêm Channel Compliance cho tất cả tệp (mỗi tệp <= 25MB)
             if not message.author.bot:
                 try:
-                    target_data = None
-                    file_name = None
+                    targets_to_check: list[tuple[bytes | str, Optional[str]]] = []
                     if message.attachments:
-                        att = message.attachments[0]
-                        file_name = att.filename
-                        target_data = await att.read()
+                        for att in message.attachments:
+                            if att.size and att.size > 25 * 1024 * 1024:
+                                continue
+                            targets_to_check.append((await att.read(), att.filename))
                     else:
-                        url_m = re.search(r"https?://[^\s]+", message.content)
-                        if url_m:
-                            target_data = url_m.group(0)
+                        for url_m in re.finditer(r"https?://[^\s]+", message.content):
+                            targets_to_check.append((url_m.group(0), None))
 
-                    if target_data:
+                    for target_data, file_name in targets_to_check:
                         rep = await asyncio.to_thread(
                             BotInspectorAdapter.inspect_in_channel,
                             file_path_or_bytes=target_data,
@@ -2093,7 +1923,7 @@ class DocumentIntakeCog(commands.Cog):
                         compliance = rep.channel_compliance
                         if compliance and not compliance.is_compliant:
                             warn_msg = (
-                                f"⚠️ {message.author.mention}, tài liệu bạn vừa đăng có thể **sai chuyên mục kênh**!\n"
+                                f"⚠️ {message.author.mention}, tài liệu `{file_name or 'liên kết'}` bạn vừa đăng có thể **sai chuyên mục kênh**!\n"
                                 f"{compliance.warning_message}\n"
                                 f"💡 *Khuyên dùng:* Hãy gửi tài liệu tại <#{intake_channel_id}> để hệ thống tự động phân loại chuẩn xác nhất!"
                             )
