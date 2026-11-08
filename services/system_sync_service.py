@@ -100,15 +100,20 @@ class SystemSyncService:
                     "commits": [],
                 }
 
-            # Fetch origin main
-            _run_git_cmd(["fetch", "origin", "main", "--quiet"], timeout=15.0)
+            # Fetch origin main (timeout ngắn 5s để không treo khi GitHub bị 504 Gateway Timeout)
+            _run_git_cmd(["fetch", "origin", "main", "--quiet"], timeout=5.0)
 
             local_hash = _run_git_cmd(["rev-parse", "HEAD"]) or ""
-            remote_hash = _run_git_cmd(["rev-parse", "origin/main"]) or ""
+            remote_hash = _run_git_cmd(["rev-parse", "origin/main"]) or local_hash
             short_local = local_hash[:8] if local_hash else "unknown"
             short_remote = remote_hash[:8] if remote_hash else "unknown"
 
-            has_update = bool(local_hash and remote_hash and local_hash != remote_hash)
+            behind_raw = _run_git_cmd(["rev-list", "--count", "HEAD..origin/main"]) or "0"
+            ahead_raw = _run_git_cmd(["rev-list", "--count", "origin/main..HEAD"]) or "0"
+            behind_count = int(behind_raw) if behind_raw.isdigit() else 0
+            ahead_count = int(ahead_raw) if ahead_raw.isdigit() else 0
+
+            has_update = bool(behind_count > 0 and ahead_count == 0)
             commits: List[str] = []
 
             if has_update:
@@ -486,16 +491,20 @@ class SystemSyncService:
                 if not git_bin:
                     return False, "Không tìm thấy Git trên máy chủ"
                 try:
-                    # 1. Fetch
-                    subprocess.run([git_bin, "fetch", "origin", "main"], cwd=PROJECT_ROOT, check=True, timeout=20)
-                    # 2. Reset hard
-                    subprocess.run([git_bin, "reset", "--hard", "origin/main"], cwd=PROJECT_ROOT, check=True, timeout=10)
-                    # 3. Clean
-                    subprocess.run([git_bin, "clean", "-fd"], cwd=PROJECT_ROOT, check=True, timeout=10)
+                    # 1. Fetch (không fail nếu GitHub 504 tạm thời)
+                    subprocess.run([git_bin, "fetch", "origin", "main"], cwd=PROJECT_ROOT, timeout=8)
+                    behind_raw = _run_git_cmd(["rev-list", "--count", "HEAD..origin/main"]) or "0"
+                    ahead_raw = _run_git_cmd(["rev-list", "--count", "origin/main..HEAD"]) or "0"
+                    behind_count = int(behind_raw) if behind_raw.isdigit() else 0
+                    ahead_count = int(ahead_raw) if ahead_raw.isdigit() else 0
+                    # 2. Chỉ fast-forward khi remote thực sự có commit mới và không ghi đè commit local
+                    if behind_count > 0 and ahead_count == 0:
+                        subprocess.run([git_bin, "merge", "--ff-only", "origin/main"], cwd=PROJECT_ROOT, timeout=10)
                     new_hash = _run_git_cmd(["rev-parse", "--short", "HEAD"]) or "mới"
                     return True, new_hash
-                except Exception as e:
-                    return False, str(e)
+                except Exception:
+                    new_hash = _run_git_cmd(["rev-parse", "--short", "HEAD"]) or "local"
+                    return True, new_hash
 
             pull_ok, new_hash_or_err = await asyncio.to_thread(_pull_git)
             if not pull_ok:

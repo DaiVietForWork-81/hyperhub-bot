@@ -194,8 +194,7 @@ class SearchResultPaginationView(discord.ui.View):
             embed.add_field(name=f"#{idx}. {title}", value=val, inline=False)
 
         embed.set_footer(
-            text="Hệ Thống Tra Cứu Kho Đề Thi Tự Động • Orbit",
-            icon_url="https://assets.codeforces.com/favicon-96x96.png",
+            text="Orbit | Vietnam • Hệ Thống Tra Cứu Kho Đề Thi",
         )
         return embed
 
@@ -449,64 +448,51 @@ class DetailedSearchFilterView(discord.ui.View):
 
 
 class DocumentSearchControlView(discord.ui.View):
-    """Bảng điều khiển cố định tại kênh Tra cứu (1553678782101979186)."""
+    """Bảng điều khiển cố định tại kênh Tra cứu (1567532842617937931)."""
 
-    def __init__(self, cog: DocumentSearchCog) -> None:
+    def __init__(self, cog: "DocumentSearchCog" | None = None) -> None:
         super().__init__(timeout=None)
         self.cog = cog
-
-    @discord.ui.button(
-        label="🎯 Tra Cứu Chi Tiết",
-        style=discord.ButtonStyle.primary,
-        emoji="🔍",
-        custom_id="btn_doc_search_detail",
-    )
-    async def btn_detail(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        try:
-            view = DetailedSearchFilterView(self.cog, interaction.user.id)
-            await interaction.response.send_message(
-                embed=view.build_status_embed(),
-                view=view,
-                ephemeral=True,
+        self.add_item(
+            discord.ui.Button(
+                label="🌐 Mở Web Tra Cứu & Tải Đề",
+                url="https://orbit-psi-black.vercel.app/#vault",
+                style=discord.ButtonStyle.link,
+                emoji="📥",
+                row=0,
             )
-        except Exception as e:
-            log.error("Lỗi khi mở tra cứu chi tiết: %s", e, exc_info=True)
-            if not interaction.response.is_done():
-                await interaction.response.send_message(f"❌ Có lỗi xảy ra: {e}", ephemeral=True)
-            else:
-                await interaction.followup.send(f"❌ Có lỗi xảy ra: {e}", ephemeral=True)
-
-    @discord.ui.button(
-        label="📝 Tra Cứu Theo Mô Tả",
-        style=discord.ButtonStyle.secondary,
-        emoji="💬",
-        custom_id="btn_doc_search_desc",
-    )
-    async def btn_desc(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        try:
-            modal = DescriptionSearchModal(self.cog)
-            await interaction.response.send_modal(modal)
-        except Exception as e:
-            log.error("Lỗi khi mở modal mô tả: %s", e, exc_info=True)
-            if not interaction.response.is_done():
-                await interaction.response.send_message(f"❌ Có lỗi xảy ra: {e}", ephemeral=True)
+        )
+        self.add_item(
+            discord.ui.Button(
+                label="🚀 Mở Bảng Điều Khiển (Hub)",
+                url="https://orbit-psi-black.vercel.app/hub",
+                style=discord.ButtonStyle.link,
+                emoji="✨",
+                row=0,
+            )
+        )
 
     @discord.ui.button(
         label="📊 Thống Kê Kho Đề",
         style=discord.ButtonStyle.secondary,
         emoji="📈",
         custom_id="btn_doc_search_stats",
+        row=1,
     )
     async def btn_stats(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         try:
             await interaction.response.defer(ephemeral=True)
-            stats = await self.cog.get_stats()
+            cog = self.cog or interaction.client.get_cog("DocumentSearch")
+            if not cog:
+                await interaction.followup.send("❌ Hệ thống chưa sẵn sàng.", ephemeral=True)
+                return
+            stats = await cog.get_stats()
             embed = discord.Embed(
                 title="📊 THỐNG KÊ KHO TÀI LIỆU & ĐỀ THI",
                 description=(
                     f"• 📚 **Tổng số lượng đề thi:** `{stats['total_items']:,}` tệp\n"
                     f"• 💾 **Tổng dung lượng kho:** `{format_bytes_to_human(stats['total_bytes'])}`\n"
-                    f"• ⚡ **Tốc độ tra cứu:** `< 1ms` (Chỉ mục SQLite & C++ Native Engine)\n\n"
+                    f"• ⚡ **Tốc độ tra cứu Web:** `< 1ms` (Chỉ mục SQLite & Cloud Sync)\n\n"
                     f"**Top môn học có nhiều đề thi nhất:**"
                 ),
                 color=0x9B59B6,
@@ -524,49 +510,6 @@ class DocumentSearchControlView(discord.ui.View):
             await interaction.followup.send(embed=embed, ephemeral=True)
         except Exception as e:
             log.error("Lỗi xem thống kê: %s", e, exc_info=True)
-            if not interaction.response.is_done():
-                await interaction.response.send_message(f"❌ Có lỗi xảy ra: {e}", ephemeral=True)
-            else:
-                await interaction.followup.send(f"❌ Có lỗi xảy ra: {e}", ephemeral=True)
-
-    @discord.ui.button(
-        label="🔄 Đồng Bộ Kho Đề",
-        style=discord.ButtonStyle.success,
-        emoji="📥",
-        custom_id="btn_doc_search_sync",
-    )
-    async def btn_sync(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        try:
-            if not interaction.user.guild_permissions.manage_guild and interaction.user.id != getattr(settings, "OWNER_ID", 0):
-                await interaction.response.send_message("❌ Chỉ Quản trị viên (Admin) mới có quyền kích hoạt quét & đồng bộ toàn bộ kho đề.", ephemeral=True)
-                return
-
-            await interaction.response.defer(ephemeral=True)
-            doc_intake_cog = self.cog.bot.get_cog("DocumentIntakeCog")
-            if not doc_intake_cog or not hasattr(doc_intake_cog, "sync_category_archive"):
-                await interaction.followup.send("❌ Phân hệ tiếp nhận chưa sẵn sàng.", ephemeral=True)
-                return
-
-            sync_res = await doc_intake_cog.sync_category_archive(interaction.guild)
-            self.cog._search_cache.clear()
-
-            embed = discord.Embed(
-                title="✅ ĐỒNG BỘ KHO ĐỀ THI HOÀN TẤT!",
-                description=(
-                    f"Hệ thống đã quét toàn bộ lịch sử các kênh chuyên môn trong Thư Mục Phân Loại:\n\n"
-                    f"• 📂 **Số kênh đã rà soát:** `{sync_res.get('channels', 0)}` kênh\n"
-                    f"• 💬 **Tổng số tin nhắn quét:** `{sync_res.get('scanned_messages', 0)}` tin nhắn\n"
-                    f"• 📥 **Tài liệu mới lập chỉ mục:** `{sync_res.get('new_indexed', 0)}` đề thi\n"
-                    f"• 🗑️ **Đề thi đã gỡ bỏ (Drama / Xóa bài):** `{sync_res.get('pruned_deleted', 0)}` đề thi\n\n"
-                    f"✨ *Mọi đề thi do **Bot** hoặc **Admin** gửi đều đã sẵn sàng để tra cứu!*"
-                ),
-                color=0x2ECC71,
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
-            if interaction.channel and isinstance(interaction.channel, discord.TextChannel):
-                await self.cog.clean_search_channel(interaction.channel)
-        except Exception as e:
-            log.error("Lỗi khi bấm nút đồng bộ kho đề: %s", e, exc_info=True)
             if not interaction.response.is_done():
                 await interaction.response.send_message(f"❌ Có lỗi xảy ra: {e}", ephemeral=True)
             else:
@@ -1073,21 +1016,16 @@ class DocumentSearchCog(commands.Cog, name="DocumentSearch"):
             return []
 
     async def build_search_panel_embed(self) -> discord.Embed:
-        """Bảng chuyển hướng tra cứu lên Web Portal (tra cứu Discord đã ngừng)."""
+        """Bảng chuyển hướng tra cứu lên Web Portal."""
         stats = await self.get_stats()
         embed = discord.Embed(
-            title="📥 TRẠM LẤY TÀI LIỆU & ĐỀ THI — LÊN WEB PORTAL",
+            title="📥 TRẠM TRA CỨU & LẤY ĐỀ THI",
             description=(
-                "Kho học liệu hiện có **{items:,}** đề thi (`{size}`) "
-                "đã được phân loại và thẩm định.\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "📌 **Muốn tra cứu, xem trước và lấy tài liệu, vui lòng lên Web:**\n"
-                "👉 **https://orbit-psi-black.vercel.app/#vault**\n"
-                "*(Hoặc vào Orbit Hub: **https://orbit-psi-black.vercel.app/hub**)*\n\n"
-                "Trên Web bạn có thể lọc tức thì theo **Môn học**, **Khối lớp** (6–12, ĐGNL, Chuyên), **Thể loại** (`thường` / `hsg` / `chuyên`), "
-                "tìm theo **từ khóa / trường / năm học**, xem trực tiếp câu hỏi và tải đề nguyên bản.\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "💡 *Mọi thao tác tìm và lấy đề thực hiện tập trung trên Web Portal để tối ưu trải nghiệm đọc & làm đề.*"
+                "Kho học liệu hiện có **{items:,} đề thi** (`{size}`) đã được phân loại chuẩn Bộ GD&ĐT 2025.\n\n"
+                "🌐 **Truy cập Kho Đề trực tuyến:** **https://orbit-psi-black.vercel.app/#vault**\n\n"
+                "• **Lọc đa chiều:** Môn học, Khối lớp (6–12, ĐGNL, Chuyên), Phân loại (`thường` / `hsg` / `chuyên`), Trường & Năm học.\n"
+                "• **Đọc & Luyện đề trực tiếp:** Xem trước PDF, bốc đề ngẫu nhiên và tải file gốc miễn phí 100%.\n"
+                "• **Lệnh nhanh trên Discord:** `/timde`, `/layde`, `/luyende` tại kênh <#1535558236957188176>."
             ).format(
                 items=stats["total_items"],
                 size=format_bytes_to_human(stats["total_bytes"]),
@@ -1095,7 +1033,7 @@ class DocumentSearchCog(commands.Cog, name="DocumentSearch"):
             color=0xFF4FCB,
         )
         embed.set_footer(
-            text="Orbit Web Portal • Tra cứu & Tải đề trên Web",
+            text="Orbit | Vietnam • Miễn phí 100% cho toàn bộ thành viên",
         )
         return embed
 
@@ -1142,10 +1080,11 @@ class DocumentSearchCog(commands.Cog, name="DocumentSearch"):
                 except Exception:
                     pass
 
-                # Cập nhật panel (không gắn nút tra cứu — chuyển hẳn lên Web)
+                # Cập nhật panel kèm nút chuyển tiếp Web
                 if panel_msg:
                     embed = await self.build_search_panel_embed()
-                    await panel_msg.edit(embed=embed, view=None)
+                    view = DocumentSearchControlView(self)
+                    await panel_msg.edit(embed=embed, view=view)
 
             except Exception as e:
                 log.warning("Lỗi dọn dẹp kênh tra cứu: %s", e)
@@ -1154,7 +1093,7 @@ class DocumentSearchCog(commands.Cog, name="DocumentSearch"):
         """Tự động kiểm tra, xóa tin nhắn cũ và đăng Bảng Điều Khiển mới tại DOC_SEARCH_CHANNEL_ID (1553678782101979186)."""
         await self.bot.wait_until_ready()
         async with self._setup_lock:
-            search_channel_id = getattr(settings, "DOC_SEARCH_CHANNEL_ID", 1553678782101979186)
+            search_channel_id = getattr(settings, "DOC_SEARCH_CHANNEL_ID", 1567532842617937931)
             channel = self.bot.get_channel(search_channel_id)
             if not channel and hasattr(self.bot, "fetch_channel"):
                 try:
@@ -1207,8 +1146,9 @@ class DocumentSearchCog(commands.Cog, name="DocumentSearch"):
 
                 embed = await self.build_search_panel_embed()
 
+                view = DocumentSearchControlView(self)
                 if existing_panel and not purge:
-                    await existing_panel.edit(embed=embed)
+                    await existing_panel.edit(embed=embed, view=view)
                     self._panel_message_id = existing_panel.id
                     log.info("✅ Bảng chuyển hướng tra cứu đã tồn tại, cập nhật nhẹ (0%% CPU) tại #%s", channel.name)
                     return
@@ -1219,7 +1159,7 @@ class DocumentSearchCog(commands.Cog, name="DocumentSearch"):
                     except Exception:
                         pass
 
-                new_msg = await channel.send(embed=embed)
+                new_msg = await channel.send(embed=embed, view=view)
                 self._panel_message_id = new_msg.id
                 log.info("✅ Đã tạo mới Bảng Chuyển Hướng Tra Cứu Web tại #%s (%s)", channel.name, channel.id)
             except Exception as e:

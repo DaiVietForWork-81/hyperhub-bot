@@ -23,8 +23,9 @@ BOT_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # 4 role Admin được thấy kênh chunks (đồng bộ với api_bridge.ADMIN_ROLE_IDS)
 CHUNK_ADMIN_ROLE_IDS = {
-    1534128845198987438,  # 👑 Owner
-    1534132250088833024,  # 👑 Co-Owner
+    1568845323223171112,  # 👑 Owner
+    1534128845198987438,  # 👑 Đồng sáng lập
+    1534132250088833024,  # 👑 Co-Owner (legacy)
     1532383529353089085,  # ⚡ Administrator
     1534146463246974995,  # 🛡️ Moderator
 }

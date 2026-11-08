@@ -494,7 +494,8 @@ class DocumentIntakeCog(commands.Cog):
             """
             SELECT id, subject, title, file_name, file_size_bytes, file_type,
                    estimated_level, question_count, page_count, author_id, author_name,
-                   timestamp, file_hash, academic_year, school_or_department,
+                   timestamp, file_hash, COALESCE(raw_text, '') AS raw_text, COALESCE(notes, '') AS notes,
+                   academic_year, school_or_department,
                    moet_2025_compliant, moet_part1_count, moet_part2_count, moet_part3_count,
                    has_answer_keys, has_detailed_solutions, file_content_base64
             FROM documents_archive
@@ -654,18 +655,18 @@ class DocumentIntakeCog(commands.Cog):
                             try:
                                 await self.bot.db.execute(
                                     """
-                                    INSERT INTO documents_archive (
-                                        subject, title, file_name, file_size_bytes, file_type,
+                                    INSERT OR REPLACE INTO documents_archive (
+                                        id, subject, title, file_name, file_size_bytes, file_type,
                                         estimated_level, question_count, page_count, author_id,
                                         author_name, channel_id, message_id, jump_url, timestamp,
-                                        file_hash, raw_text, academic_year, school_or_department
-                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                        file_hash, raw_text, notes, academic_year, school_or_department
+                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                     """,
-                                    subject, title, file_name, doc.get("file_size_bytes", 0), doc.get("file_type", "PDF"),
+                                    doc_id, subject, title, file_name, doc.get("file_size_bytes", 0), doc.get("file_type", "PDF"),
                                     grade, q_cnt, p_cnt, doc.get("author_id", 0),
                                     author_name, target_ch.id, posted_msg.id, posted_msg.jump_url,
                                     doc.get("timestamp") or datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                                    doc.get("file_hash"), "", academic_year, school
+                                    doc.get("file_hash"), doc.get("raw_text", ""), doc.get("notes", ""), academic_year, school
                                 )
                             except Exception:
                                 pass

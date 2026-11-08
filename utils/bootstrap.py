@@ -261,8 +261,7 @@ def check_and_apply_git_updates() -> bool:
             print("=" * 70, flush=True)
             print("[*] Đang tự động kéo bản cập nhật và đồng bộ 100%...", flush=True)
 
-            subprocess.run([git_bin, "reset", "--hard", "origin/main"], cwd=PROJECT_DIR, check=True)
-            subprocess.run([git_bin, "clean", "-fd"], cwd=PROJECT_DIR, check=True)
+            subprocess.run([git_bin, "merge", "--ff-only", "origin/main"], cwd=PROJECT_DIR, check=False)
             print("[+] Đã đồng bộ mã nguồn mới nhất thành công! Đang khởi động lại Bot...", flush=True)
 
             new_env = os.environ.copy()

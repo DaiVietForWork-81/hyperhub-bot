@@ -88,6 +88,10 @@ if HAS_PYDANTIC:
             default=1534148186942214226,
             description="Kênh #📄・info (Sổ tay hướng dẫn & bảng thông tin Orbit)",
         )
+        WEB_VERIFY_CHANNEL_ID: int = Field(
+            default=1568268605085454416,
+            description="Kênh #🔐・verify trong thư mục 1534145110642524250 để lấy mã xác minh đăng nhập Web (hiệu lực 5 phút)",
+        )
         DATABASE_ARCHIVE_CHANNEL_ID: int = Field(
             default=1548627763467128912,
             description="Kênh #database (Kho lưu trữ đề thi, lời giải và tài liệu)",
@@ -306,6 +310,22 @@ if HAS_PYDANTIC:
             default="",
             description="Google Safe Browsing API Key (tùy chọn)",
         )
+        NVIDIA_API_KEY: str = Field(
+            default="",
+            description="NVIDIA NIM API Key (https://build.nvidia.com/)",
+        )
+        NVIDIA_BASE_URL: str = Field(
+            default="https://integrate.api.nvidia.com/v1",
+            description="NVIDIA NIM API Base URL",
+        )
+        NVIDIA_PRIMARY_MODEL: str = Field(
+            default="nvidia/nemotron-3-ultra-550b-a55b",
+            description="Model chính 550B mạnh nhất trên NVIDIA NIM (~5-8s/file, < 1p)",
+        )
+        NVIDIA_FALLBACK_MODEL: str = Field(
+            default="nvidia/nemotron-3.5-super-vl-120b-a12b",
+            description="Model dự phòng 120B trên NVIDIA NIM",
+        )
         CONFLICT_MONITOR_CATEGORY_ID: int = Field(
             default=1534147161091211414,
             description="ID Thư mục (Category ID) giám sát xung đột",
@@ -362,6 +382,14 @@ if HAS_PYDANTIC:
         BOT_API_SECRET: str = Field(
             default="",
             description="Mã khóa bí mật (Bearer/Header Secret) xác thực giữa Bot và Web (bắt buộc cấu hình qua biến môi trường .env)",
+        )
+        WEB_SYNC_WEBHOOK_ID: int = Field(
+            default=1568882621470089247,
+            description="ID của Discord Webhook đồng bộ tín hiệu khi Web khởi động / sử dụng",
+        )
+        WEB_SYNC_WEBHOOK_URL: str = Field(
+            default="https://discord.com/api/webhooks/1568882621470089247/Q49ZOF2DnRtl82yiVgv7PYwuvufyrCqY4iSGq0ci43yXsvZA27AlO4mImX3KnH-NuuIO",
+            description="URL Discord Webhook đồng bộ giữa Web (Vercel) và Discord Bot",
         )
         EMBEDDING_ENABLED: bool = Field(
             default=False,
@@ -521,6 +549,9 @@ else:
             )
             self.INFO_CHANNEL_ID = int(
                 os.environ.get("INFO_CHANNEL_ID", "1534148186942214226") or "1534148186942214226"
+            )
+            self.WEB_VERIFY_CHANNEL_ID = int(
+                os.environ.get("WEB_VERIFY_CHANNEL_ID", "1568268605085454416") or "1568268605085454416"
             )
             self.DATABASE_ARCHIVE_CHANNEL_ID = int(
                 os.environ.get("DATABASE_ARCHIVE_CHANNEL_ID", "1548627763467128912") or "1548627763467128912"
@@ -714,6 +745,14 @@ else:
                 "TURSO_DATABASE_URL", "https://daiviet-daiviet.aws-ap-northeast-1.turso.io"
             )
             self.TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "")
+            self.WEB_SYNC_WEBHOOK_ID = int(
+                os.environ.get("WEB_SYNC_WEBHOOK_ID", "1568882621470089247")
+                or "1568882621470089247"
+            )
+            self.WEB_SYNC_WEBHOOK_URL = os.environ.get(
+                "WEB_SYNC_WEBHOOK_URL",
+                "https://discord.com/api/webhooks/1568882621470089247/Q49ZOF2DnRtl82yiVgv7PYwuvufyrCqY4iSGq0ci43yXsvZA27AlO4mImX3KnH-NuuIO",
+            )
 
             self.CF_API_KEY = os.environ.get("CF_API_KEY")
             self.CF_API_SECRET = os.environ.get("CF_API_SECRET")

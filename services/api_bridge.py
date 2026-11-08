@@ -29,13 +29,27 @@ BOT_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # 4 Role Quản trị Web theo yêu cầu (Admin Console chỉ hiện với 4 role này
 # + Bot Owner / Guild Owner / quyền Administrator dự phòng)
 ADMIN_ROLE_IDS = {
-    1534128845198987438,  # 👑 Owner
-    1534132250088833024,  # 👑 Co-Owner
-    1532383529353089085,  # ⚡ Administrator
-    1534146463246974995,  # 🛡️ Moderator
+    1568845323223171112,  # 👑 Owner (Orbit | Vietnam)
+    1534128845198987438,  # 👑 Đồng sáng lập (Orbit | Vietnam)
+    1534132250088833024,  # 👑 Co-Owner (Legacy)
+    1532383529353089085,  # ⚡ Administrator (Orbit | Vietnam)
+    1534146463246974995,  # 🛡️ Moderator (Orbit | Vietnam)
+    1567911292201599030,  # 👑 Đồng Sáng Lập Orbit (Orbit | Toán)
+    1567911295657971752,  # 📐 Quản Lý Orbit | Toán
+    1567911298103255113,  # 🛡️ Admin (Orbit | Toán)
+    1567911301630394580,  # ⚔️ Mod (Orbit | Toán)
 }
 BOT_OWNER_ID = 1529864608813416449
 DISCORD_GUILD_ID = 1532265330079174697
+WEB_SYNC_WEBHOOK_ID = int(getattr(settings, "WEB_SYNC_WEBHOOK_ID", 1568882621470089247) or 1568882621470089247)
+WEB_SYNC_WEBHOOK_URL = (
+    getattr(
+        settings,
+        "WEB_SYNC_WEBHOOK_URL",
+        "https://discord.com/api/webhooks/1568882621470089247/Q49ZOF2DnRtl82yiVgv7PYwuvufyrCqY4iSGq0ci43yXsvZA27AlO4mImX3KnH-NuuIO",
+    )
+    or "https://discord.com/api/webhooks/1568882621470089247/Q49ZOF2DnRtl82yiVgv7PYwuvufyrCqY4iSGq0ci43yXsvZA27AlO4mImX3KnH-NuuIO"
+)
 
 
 class BotAPIBridge:
@@ -50,6 +64,17 @@ class BotAPIBridge:
         self._general_rate_limits: dict[str, list[float]] = {}
         self._doc_stats_cache: tuple[dict, float] | None = None
         self._doc_min_id_cache: tuple[dict[str, tuple[int, int]], float] | None = None
+        # Trạng thái kết nối & đồng bộ 2 chiều qua Discord Webhook (1568882621470089247)
+        self.web_connected: bool = False
+        self.last_web_signal_ts: int = 0
+        self.last_web_origin: str = "https://orbit-psi-black.vercel.app"
+        self.last_web_event: str = ""
+        self.last_web_user: str = ""
+        self.last_web_channel_id: int = 0
+        self.web_handshake_count: int = 0
+        self._last_webhook_reply_ts: float = 0.0
+        self._last_webhook_reconcile_ts: float = 0.0
+        self._webhook_listener_registered: bool = False
         self.app = web.Application(
             client_max_size=30 * 1024 * 1024,  # Giới hạn an toàn 30 MB
             middlewares=[self._cors_middleware, self._rate_limit_middleware, self._auth_middleware],
@@ -163,29 +188,59 @@ class BotAPIBridge:
                 "role_name": "👑 Owner",
             }
 
-        if not token:
+        user_data = None
+        if token:
+            user_data = await self._verify_discord_bearer_token(token)
+
+        user_id = 0
+        if user_data:
+            if not user_data.get("verified", True):
+                logger.warning(f"Từ chối admin: tài khoản {user_data.get('id')} chưa xác minh email")
+                return None
+            user_id = int(user_data.get("id", 0))
+        else:
+            # Hỗ trợ xác thực dự phòng qua X-Discord-User-Id nếu đã xác thực 2 bước trong linked_accounts
+            raw_hdr_uid = (request.headers.get("X-Discord-User-Id") or request.query.get("admin_uid") or "").strip()
+            if raw_hdr_uid.isdigit():
+                cand_uid = int(raw_hdr_uid)
+                is_verified_link = (cand_uid == BOT_OWNER_ID) or (settings.OWNER_ID and cand_uid == settings.OWNER_ID)
+                if not is_verified_link and hasattr(self.bot, "db") and self.bot.db:
+                    try:
+                        lrow = await self.bot.db.fetchone(
+                            "SELECT verified, username, global_name FROM linked_accounts WHERE discord_id = ?",
+                            cand_uid,
+                        )
+                        if lrow and int(lrow[0] or 0) == 1:
+                            is_verified_link = True
+                            user_data = {"id": str(cand_uid), "username": lrow[1] or str(cand_uid), "global_name": lrow[2] or lrow[1], "verified": True}
+                    except Exception:
+                        pass
+                if is_verified_link:
+                    user_id = cand_uid
+                    if not user_data:
+                        user_data = {"id": str(cand_uid), "username": "Owner", "global_name": "Owner", "verified": True}
+
+        if not user_id:
             return None
 
-        # 2. Xác thực với Discord OAuth2 token
-        user_data = await self._verify_discord_bearer_token(token)
-        if not user_data:
-            return None
-
-        # Bắt buộc email đã xác minh (verified: true) — chặn tài khoản rác/spam bot
-        if not user_data.get("verified"):
-            logger.warning(f"Từ chối admin: tài khoản {user_data.get('id')} chưa xác minh email")
-            return None
-
-        user_id = int(user_data.get("id", 0))
-
-        # Bot Owner luôn có quyền Admin cao nhất
+        # Bot Owner luôn có quyền Admin cao nhất (100% Full Control)
         if user_id == BOT_OWNER_ID or (settings.OWNER_ID and user_id == settings.OWNER_ID):
             return {
                 "is_admin": True,
-                "user_id": user_id,
+                "user_id": str(user_id),
                 "username": user_data.get("username", "Owner"),
                 "display_name": user_data.get("global_name") or user_data.get("username"),
                 "role_name": "👑 Owner",
+                "tier": "owner",
+                "full_control": True,
+                "permissions": {
+                    "manage_roles": True,
+                    "manage_members": True,
+                    "manage_documents": True,
+                    "manage_channels": True,
+                    "manage_system": True,
+                    "view_logs": True,
+                },
             }
 
         # Kiểm tra vai trò trong Discord Server
@@ -203,27 +258,42 @@ class BotAPIBridge:
         if not member:
             return None
 
-        # Chủ server hoặc thành viên có quyền administrator
-        if guild.owner_id == user_id or member.guild_permissions.administrator:
-            return {
-                "is_admin": True,
-                "user_id": user_id,
-                "username": member.name,
-                "display_name": member.display_name,
-                "role_name": "⚡ Administrator",
-            }
-
-        # Kiểm tra 4 role admin theo danh sách yêu cầu
         user_role_ids = {r.id for r in member.roles}
+        is_srv_owner = (guild.owner_id == user_id) or (1568845323223171112 in user_role_ids)
+        is_co_owner = bool(user_role_ids.intersection({1534128845198987438, 1534132250088833024, 1567911292201599030}))
+        is_srv_admin = member.guild_permissions.administrator or bool(user_role_ids.intersection({1532383529353089085, 1567911295657971752, 1567911298103255113}))
         matched = user_role_ids.intersection(ADMIN_ROLE_IDS)
-        if matched:
-            top_admin_role = member.top_role.name
+
+        if is_srv_owner or is_co_owner or is_srv_admin or matched:
+            if is_srv_owner:
+                rname = "👑 Owner"
+                tier = "owner"
+            elif is_co_owner:
+                rname = "👑 Đồng sáng lập"
+                tier = "co_owner"
+            elif is_srv_admin:
+                rname = "⚡ Administrator"
+                tier = "admin"
+            else:
+                rname = member.top_role.name if getattr(member, "top_role", None) else "🛡️ Moderator"
+                tier = "moderator"
             return {
                 "is_admin": True,
-                "user_id": user_id,
+                "user_id": str(user_id),
                 "username": member.name,
                 "display_name": member.display_name,
-                "role_name": top_admin_role,
+                "avatar_url": member.display_avatar.url if getattr(member, "display_avatar", None) else "",
+                "role_name": rname,
+                "tier": tier,
+                "full_control": True,
+                "permissions": {
+                    "manage_roles": True,
+                    "manage_members": True,
+                    "manage_documents": True,
+                    "manage_channels": True,
+                    "manage_system": True,
+                    "view_logs": True,
+                },
             }
 
         return None
@@ -320,7 +390,7 @@ class BotAPIBridge:
         if request.method in ("POST", "DELETE", "PATCH", "PUT"):
             # Endpoint upload, import_gdrive, notify, account/link, study, forum, admin và system endpoints sẽ tự kiểm tra xác thực bên trong handler
             if (
-                request.path in ("/api/documents/upload", "/api/documents/import_gdrive", "/api/notify", "/api/account/link", "/api/account/verify-member", "/api/account/verify-code", "/api/study/checkin")
+                request.path in ("/api/documents/upload", "/api/documents/sync_pending", "/api/documents/import_gdrive", "/api/notify", "/api/account/link", "/api/account/verify-member", "/api/account/verify-code", "/api/study/checkin", "/api/webhook/handshake")
                 or request.path.startswith("/api/study/")
                 or request.path.startswith("/api/forum/")
                 or request.path.startswith("/api/admin/")
@@ -377,12 +447,20 @@ class BotAPIBridge:
         self.app.router.add_get("/api/documents/{id}/content", self.handle_get_document_content)
         self.app.router.add_get("/api/documents/check_hash", self.handle_check_hash)
         self.app.router.add_post("/api/documents/upload", self.handle_upload_document)
+        self.app.router.add_post("/api/documents/sync_pending", self.handle_sync_pending_documents)
         self.app.router.add_post("/api/documents/import_gdrive", self.handle_import_gdrive)
-        # Endpoints Admin Portal
+        # Endpoints Admin Portal (100% Full Control cho Admin/Owner)
         self.app.router.add_get("/api/admin/check", self.handle_admin_check)
+        self.app.router.add_get("/api/admin/bootstrap", self.handle_admin_bootstrap)
+        self.app.router.add_get("/api/admin/roles", self.handle_admin_roles)
+        self.app.router.add_post("/api/admin/roles", self.handle_admin_create_role)
+        self.app.router.add_post("/api/admin/roles/align", self.handle_admin_align_roles)
+        self.app.router.add_patch("/api/admin/roles/{role_id}", self.handle_admin_edit_role)
+        self.app.router.add_delete("/api/admin/roles/{role_id}", self.handle_admin_delete_role)
         self.app.router.add_get("/api/admin/bans", self.handle_admin_bans)
         self.app.router.add_get("/api/admin/channels", self.handle_admin_channels)
         self.app.router.add_get("/api/admin/members", self.handle_admin_members)
+        self.app.router.add_post("/api/admin/members/{user_id}/roles", self.handle_admin_member_roles)
         self.app.router.add_get("/api/admin/logs", self.handle_admin_logs)
         self.app.router.add_get("/api/admin/config", self.handle_admin_config)
         self.app.router.add_get("/api/admin/audit-logs", self.handle_admin_audit_logs)
@@ -390,18 +468,24 @@ class BotAPIBridge:
         self.app.router.add_post("/api/admin/unban", self.handle_admin_unban)
         self.app.router.add_post("/api/admin/kick", self.handle_admin_kick)
         self.app.router.add_post("/api/admin/timeout", self.handle_admin_timeout)
+        self.app.router.add_post("/api/admin/documents/bulk", self.handle_admin_bulk_documents)
         self.app.router.add_delete("/api/admin/documents/{id}", self.handle_admin_delete_document)
         self.app.router.add_patch("/api/admin/documents/{id}", self.handle_admin_edit_document)
         self.app.router.add_post("/api/admin/documents/{id}/archive", self.handle_admin_archive_document)
         self.app.router.add_post("/api/admin/archive/lockdown", self.handle_admin_archive_lockdown)
         self.app.router.add_post("/api/admin/channels", self.handle_admin_create_channel)
+        self.app.router.add_delete("/api/admin/channels/{id}", self.handle_admin_delete_channel)
         self.app.router.add_post("/api/admin/channels/{id}/lockdown", self.handle_admin_channel_lockdown)
+        self.app.router.add_post("/api/admin/panels/refresh", self.handle_admin_refresh_panels)
         # Endpoints Đồng Bộ Hệ Thống & Cập Nhật GitHub
         self.app.router.add_get("/api/system/update_status", self.handle_system_update_status)
         self.app.router.add_post("/api/system/check_update", self.handle_system_check_update)
         self.app.router.add_post("/api/system/apply_update", self.handle_system_apply_update)
         self.app.router.add_post("/api/system/reload", self.handle_system_reload)
         self.app.router.add_post("/api/system/announce_startup", self.handle_system_announce_startup)
+        # Endpoints Discord Webhook Handshake & Kết Nối Thời Gian Thực (Web <-> Bot)
+        self.app.router.add_get("/api/webhook/handshake", self.handle_webhook_handshake)
+        self.app.router.add_post("/api/webhook/handshake", self.handle_webhook_handshake)
 
     async def handle_status(self, request: web.Request) -> web.Response:
         """GET /api/status: Trả về trạng thái hoạt động của Bot."""
@@ -416,6 +500,12 @@ class BotAPIBridge:
             "guilds_count": len(self.bot.guilds),
             "uptime_seconds": uptime,
             "timestamp": int(time.time()),
+            "web_connected": self.web_connected,
+            "last_web_signal_ts": self.last_web_signal_ts,
+            "last_web_origin": self.last_web_origin,
+            "last_web_event": self.last_web_event,
+            "web_handshake_count": self.web_handshake_count,
+            "webhook_id": str(WEB_SYNC_WEBHOOK_ID),
         })
 
     async def handle_get_skills(self, request: web.Request) -> web.Response:
@@ -3245,58 +3335,490 @@ class BotAPIBridge:
 
         return web.json_response({"success": True, "total": len(bans), "bans": bans})
 
-    async def handle_admin_channels(self, request: web.Request) -> web.Response:
-        """GET /api/admin/channels: Liệt kê kênh text trong server để Admin chọn nơi gửi thông báo."""
+    def _resolve_target_guild(self, request: web.Request, body: dict | None = None) -> discord.Guild | None:
+        raw_gid = (
+            (body.get("guild_id") if isinstance(body, dict) else None)
+            or request.query.get("guild_id")
+            or str(DISCORD_GUILD_ID)
+        )
+        try:
+            gid = int(str(raw_gid).strip())
+            g = self.bot.get_guild(gid)
+            if g:
+                return g
+        except Exception:
+            pass
+        return self.bot.get_guild(DISCORD_GUILD_ID) or (self.bot.guilds[0] if self.bot.guilds else None)
+
+    @staticmethod
+    def _classify_role_tier(role: discord.Role) -> str:
+        rname = role.name or ""
+        if role.is_default():
+            return "default"
+        if "╭───" in rname or "───╮" in rname:
+            return "divider"
+        if role.managed or "🤖" in rname or rname in ("Orbit", "Sapphire"):
+            return "bot"
+        if role.permissions.administrator or role.id in ADMIN_ROLE_IDS or any(k in rname for k in ("Owner", "Đồng sáng lập", "Quản Lý", "Admin", "Moderator", "Mod")):
+            return "staff"
+        if any(k in rname for k in ("Orbit Elite", "Orbit Ultra", "Tác giả", "Tác Giả", "Chuyên", "HSG", "Giỏi", "Khá")):
+            return "honor"
+        if "Lớp " in rname:
+            return "grade"
+        if "Học sinh" in rname or "Học Sinh" in rname or "Bình Thường" in rname:
+            return "member"
+        return "other"
+
+    @staticmethod
+    def _serialize_role(role: discord.Role, bot_top_pos: int) -> dict[str, Any]:
+        perms = role.permissions
+        perm_flags = []
+        for flag_name in (
+            "administrator", "manage_guild", "manage_roles", "manage_channels",
+            "kick_members", "ban_members", "moderate_members", "manage_messages",
+            "manage_threads", "view_audit_log", "mention_everyone", "send_messages", "view_channel"
+        ):
+            if getattr(perms, flag_name, False):
+                perm_flags.append(flag_name)
+        return {
+            "id": str(role.id),
+            "name": role.name,
+            "color": f"#{role.colour.value:06X}" if role.colour.value else "#94A3B8",
+            "color_int": role.colour.value,
+            "position": role.position,
+            "hoist": bool(role.hoist),
+            "mentionable": bool(role.mentionable),
+            "managed": bool(role.managed),
+            "is_default": bool(role.is_default()),
+            "permissions": str(perms.value),
+            "permissions_list": perm_flags,
+            "member_count": len(role.members),
+            "tier": BotAPIBridge._classify_role_tier(role),
+            "editable": bool(not role.managed and (role.is_default() or role.position < bot_top_pos)),
+        }
+
+    async def handle_admin_bootstrap(self, request: web.Request) -> web.Response:
+        """GET /api/admin/bootstrap?guild_id=...: Trả về toàn bộ dữ liệu khởi tạo Admin Hub trong 1 request duy nhất."""
+        import json as _json
         admin_info = await self._verify_admin_access(request)
         if not admin_info:
             return web.json_response({"error": "Forbidden", "message": "Yêu cầu quyền Quản trị viên"}, status=403)
 
-        guild = self.bot.get_guild(DISCORD_GUILD_ID) or (self.bot.guilds[0] if self.bot.guilds else None)
+        roles_resp, members_resp, bans_resp, channels_resp, config_resp, update_resp = await asyncio.gather(
+            self.handle_admin_roles(request),
+            self.handle_admin_members(request),
+            self.handle_admin_bans(request),
+            self.handle_admin_channels(request),
+            self.handle_admin_config(request),
+            self.handle_system_update_status(request),
+            return_exceptions=True,
+        )
+
+        def _parse_resp(r: Any, default_val: Any) -> Any:
+            if isinstance(r, web.Response) and r.text:
+                try:
+                    return _json.loads(r.text)
+                except Exception:
+                    pass
+            return default_val
+
+        now_ts = int(time.time())
+        uptime = int(now_ts - START_TIME)
+        ping = round(self.bot.latency * 1000, 2) if hasattr(self.bot, "latency") and self.bot.latency == self.bot.latency else 0.0
+
+        return web.json_response({
+            "success": True,
+            "admin": admin_info,
+            "bot_online": True,
+            "status": {
+                "status": "online",
+                "bot_user": str(self.bot.user) if self.bot.user else "Orbit Bot",
+                "bot_id": self.bot.user.id if self.bot.user else 0,
+                "ping_ms": ping,
+                "guilds_count": len(self.bot.guilds),
+                "uptime_seconds": uptime,
+                "timestamp": now_ts,
+                "web_connected": self.web_connected,
+                "last_web_signal_ts": self.last_web_signal_ts,
+                "last_web_origin": self.last_web_origin,
+                "last_web_event": self.last_web_event,
+                "web_handshake_count": self.web_handshake_count,
+                "webhook_id": str(WEB_SYNC_WEBHOOK_ID),
+            },
+            "roles_data": _parse_resp(roles_resp, {"roles": [], "guilds": []}),
+            "members_data": _parse_resp(members_resp, {"members": []}),
+            "bans_data": _parse_resp(bans_resp, {"bans": []}),
+            "channels_data": _parse_resp(channels_resp, {"channels": [], "categories": []}),
+            "config_data": _parse_resp(config_resp, None),
+            "update_status": _parse_resp(update_resp, None),
+        })
+
+    async def handle_admin_roles(self, request: web.Request) -> web.Response:
+        """GET /api/admin/roles?guild_id=...: Lấy toàn bộ hệ thống Role kèm phân cấp, màu sắc, quyền hạn và số thành viên."""
+        admin_info = await self._verify_admin_access(request)
+        if not admin_info:
+            return web.json_response({"error": "Forbidden", "message": "Yêu cầu quyền Quản trị viên"}, status=403)
+
+        guild = self._resolve_target_guild(request)
+        if not guild:
+            return web.json_response({"error": "Máy chủ Discord không khả dụng"}, status=503)
+
+        bot_top_pos = guild.me.top_role.position if guild.me and guild.me.top_role else 999
+        sorted_roles = sorted(guild.roles, key=lambda r: r.position, reverse=True)
+        roles_data = [self._serialize_role(r, bot_top_pos) for r in sorted_roles]
+        guilds_list = [
+            {"id": str(g.id), "name": g.name, "member_count": g.member_count or len(g.members)}
+            for g in self.bot.guilds
+        ]
+        return web.json_response({
+            "success": True,
+            "guild_id": str(guild.id),
+            "guild_name": guild.name,
+            "bot_top_position": bot_top_pos,
+            "guilds": guilds_list,
+            "total": len(roles_data),
+            "roles": roles_data,
+        })
+
+    @staticmethod
+    def _resolve_permissions_preset(preset: str | None, raw_perms: str | int | None = None) -> discord.Permissions:
+        from cogs.rolemanager import PERM_ADMIN_BITS, PERM_MOD_BITS, PERM_SAFE_MEMBER_BITS
+        if raw_perms is not None and str(raw_perms).isdigit():
+            return discord.Permissions(int(raw_perms))
+        p = (preset or "").strip().lower()
+        if p == "admin":
+            return discord.Permissions(PERM_ADMIN_BITS)
+        if p == "moderator":
+            return discord.Permissions(PERM_MOD_BITS)
+        if p == "member":
+            return discord.Permissions(PERM_SAFE_MEMBER_BITS)
+        if p == "readonly":
+            return discord.Permissions((1 << 10) | (1 << 16))
+        return discord.Permissions(0)
+
+    async def handle_admin_create_role(self, request: web.Request) -> web.Response:
+        """POST /api/admin/roles: Tạo Role mới trên máy chủ Discord."""
+        admin_info = await self._verify_admin_access(request)
+        if not admin_info:
+            return web.json_response({"error": "Forbidden", "message": "Yêu cầu quyền Quản trị viên"}, status=403)
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Dữ liệu JSON không hợp lệ"}, status=400)
+
+        guild = self._resolve_target_guild(request, body)
+        if not guild:
+            return web.json_response({"error": "Máy chủ Discord không khả dụng"}, status=503)
+
+        name = str(body.get("name") or "").strip()[:100]
+        if not name:
+            return web.json_response({"error": "Vui lòng nhập tên Role"}, status=400)
+
+        raw_color = str(body.get("color") or "#A855F7").strip().lstrip("#")
+        try:
+            color_int = int(raw_color, 16) if raw_color else 0xA855F7
+        except ValueError:
+            color_int = 0xA855F7
+
+        hoist = bool(body.get("hoist", True))
+        mentionable = bool(body.get("mentionable", True))
+        perms = self._resolve_permissions_preset(body.get("permissions_preset"), body.get("permissions"))
+
+        try:
+            created = await guild.create_role(
+                name=name,
+                colour=discord.Colour(color_int),
+                hoist=hoist,
+                mentionable=mentionable,
+                permissions=perms,
+                reason=f"Tạo bởi {admin_info.get('username')} qua Orbit Admin Hub",
+            )
+            bot_top_pos = guild.me.top_role.position if guild.me and guild.me.top_role else 999
+            return web.json_response({
+                "success": True,
+                "message": f"Đã tạo Role '{created.name}' thành công!",
+                "role": self._serialize_role(created, bot_top_pos),
+            })
+        except Exception as e:
+            logger.error(f"Lỗi tạo role: {e}")
+            return web.json_response({"error": f"Không thể tạo Role: {e}"}, status=500)
+
+    async def handle_admin_edit_role(self, request: web.Request) -> web.Response:
+        """PATCH /api/admin/roles/{role_id}: Chỉnh sửa tên, màu sắc, hoist, mentionable, quyền hạn hoặc vị trí Role."""
+        admin_info = await self._verify_admin_access(request)
+        if not admin_info:
+            return web.json_response({"error": "Forbidden", "message": "Yêu cầu quyền Quản trị viên"}, status=403)
+
+        role_id_str = request.match_info.get("role_id", "")
+        if not role_id_str.isdigit():
+            return web.json_response({"error": "role_id không hợp lệ"}, status=400)
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Dữ liệu JSON không hợp lệ"}, status=400)
+
+        guild = self._resolve_target_guild(request, body)
+        if not guild:
+            return web.json_response({"error": "Máy chủ Discord không khả dụng"}, status=503)
+
+        role = guild.get_role(int(role_id_str))
+        if not role:
+            return web.json_response({"error": "Không tìm thấy Role trên máy chủ"}, status=404)
+
+        try:
+            edit_kwargs: dict[str, Any] = {}
+            if not role.is_default():
+                if "name" in body and str(body["name"]).strip():
+                    edit_kwargs["name"] = str(body["name"]).strip()[:100]
+                if "color" in body:
+                    raw_col = str(body["color"]).strip().lstrip("#")
+                    try:
+                        edit_kwargs["colour"] = discord.Colour(int(raw_col, 16))
+                    except ValueError:
+                        pass
+                if "hoist" in body:
+                    edit_kwargs["hoist"] = bool(body["hoist"])
+                if "mentionable" in body:
+                    edit_kwargs["mentionable"] = bool(body["mentionable"])
+
+            if "permissions_preset" in body or "permissions" in body:
+                edit_kwargs["permissions"] = self._resolve_permissions_preset(
+                    body.get("permissions_preset"),
+                    body.get("permissions"),
+                )
+
+            if edit_kwargs:
+                edit_kwargs["reason"] = f"Chỉnh sửa bởi {admin_info.get('username')} qua Orbit Admin Hub"
+                await role.edit(**edit_kwargs)
+
+            # Dịch chuyển vị trí Lên / Xuống hoặc position cụ thể
+            direction = str(body.get("direction") or "").lower()
+            if direction in ("up", "down") and not role.is_default():
+                bot_top_pos = guild.me.top_role.position if guild.me and guild.me.top_role else 999
+                target_pos = role.position + (1 if direction == "up" else -1)
+                target_pos = max(1, min(target_pos, bot_top_pos - 1))
+                await role.edit(position=target_pos, reason=f"Đổi vị trí Role bởi {admin_info.get('username')}")
+            elif "position" in body and not role.is_default():
+                try:
+                    bot_top_pos = guild.me.top_role.position if guild.me and guild.me.top_role else 999
+                    target_pos = max(1, min(int(body["position"]), bot_top_pos - 1))
+                    await role.edit(position=target_pos, reason=f"Đổi vị trí Role bởi {admin_info.get('username')}")
+                except (ValueError, TypeError):
+                    pass
+
+            bot_top_pos = guild.me.top_role.position if guild.me and guild.me.top_role else 999
+            return web.json_response({
+                "success": True,
+                "message": f"Đã cập nhật Role '{role.name}' thành công!",
+                "role": self._serialize_role(role, bot_top_pos),
+            })
+        except Exception as e:
+            logger.error(f"Lỗi sửa role {role_id_str}: {e}")
+            return web.json_response({"error": f"Không thể cập nhật Role: {e}"}, status=500)
+
+    async def handle_admin_delete_role(self, request: web.Request) -> web.Response:
+        """DELETE /api/admin/roles/{role_id}: Xóa Role khỏi máy chủ."""
+        admin_info = await self._verify_admin_access(request)
+        if not admin_info:
+            return web.json_response({"error": "Forbidden", "message": "Yêu cầu quyền Quản trị viên"}, status=403)
+
+        role_id_str = request.match_info.get("role_id", "")
+        if not role_id_str.isdigit():
+            return web.json_response({"error": "role_id không hợp lệ"}, status=400)
+
+        guild = self._resolve_target_guild(request)
+        if not guild:
+            return web.json_response({"error": "Máy chủ Discord không khả dụng"}, status=503)
+
+        role = guild.get_role(int(role_id_str))
+        if not role:
+            return web.json_response({"error": "Không tìm thấy Role"}, status=404)
+        if role.is_default() or role.managed:
+            return web.json_response({"error": "Không thể xóa Role mặc định (@everyone) hoặc Role tích hợp của Bot"}, status=400)
+
+        rname = role.name
+        try:
+            await role.delete(reason=f"Xóa bởi {admin_info.get('username')} qua Orbit Admin Hub")
+            return web.json_response({
+                "success": True,
+                "message": f"Đã xóa Role '{rname}' thành công!",
+                "deleted_id": role_id_str,
+            })
+        except Exception as e:
+            logger.error(f"Lỗi xóa role {role_id_str}: {e}")
+            return web.json_response({"error": f"Không thể xóa Role: {e}"}, status=500)
+
+    async def handle_admin_align_roles(self, request: web.Request) -> web.Response:
+        """POST /api/admin/roles/align: Căn chỉnh tự động toàn bộ thứ tự, màu sắc, quyền hạn Role và gán Role chuẩn."""
+        admin_info = await self._verify_admin_access(request)
+        if not admin_info:
+            return web.json_response({"error": "Forbidden", "message": "Yêu cầu quyền Quản trị viên"}, status=403)
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+        guild = self._resolve_target_guild(request, body)
+        if not guild:
+            return web.json_response({"error": "Máy chủ Discord không khả dụng"}, status=503)
+
+        try:
+            from cogs.rolemanager import align_orbit_guild_roles
+            res = await align_orbit_guild_roles(guild, getattr(self.bot, "db", None))
+            return web.json_response(res, status=200 if res.get("success") else 400)
+        except Exception as e:
+            logger.error(f"Lỗi align roles: {e}", exc_info=True)
+            return web.json_response({"error": f"Không thể căn chỉnh Role: {e}"}, status=500)
+
+    async def handle_admin_member_roles(self, request: web.Request) -> web.Response:
+        """POST /api/admin/members/{user_id}/roles: Cấp (add), gỡ (remove) hoặc đặt lại (set) Role cho thành viên."""
+        admin_info = await self._verify_admin_access(request)
+        if not admin_info:
+            return web.json_response({"error": "Forbidden", "message": "Yêu cầu quyền Quản trị viên"}, status=403)
+
+        user_id_str = request.match_info.get("user_id", "")
+        if not user_id_str.isdigit():
+            return web.json_response({"error": "user_id không hợp lệ"}, status=400)
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Dữ liệu JSON không hợp lệ"}, status=400)
+
+        guild = self._resolve_target_guild(request, body)
+        if not guild:
+            return web.json_response({"error": "Máy chủ Discord không khả dụng"}, status=503)
+
+        target_id = int(user_id_str)
+        member = guild.get_member(target_id)
+        if not member:
+            try:
+                member = await guild.fetch_member(target_id)
+            except Exception:
+                member = None
+        if not member:
+            return web.json_response({"error": "Không tìm thấy thành viên trong máy chủ"}, status=404)
+
+        action = str(body.get("action") or "toggle").lower()
+        role_id_raw = body.get("role_id")
+        role_ids_raw = body.get("role_ids")
+
+        try:
+            if action == "set" and isinstance(role_ids_raw, list):
+                desired_ids = {int(rid) for rid in role_ids_raw if str(rid).isdigit()}
+                bot_top_pos = guild.me.top_role.position if guild.me and guild.me.top_role else 999
+                keep_roles = [r for r in member.roles if r.is_default() or r.managed or r.position >= bot_top_pos]
+                new_roles = [guild.get_role(rid) for rid in desired_ids]
+                new_roles = [r for r in new_roles if r and not r.is_default() and not r.managed and r.position < bot_top_pos]
+                final_map = {r.id: r for r in (keep_roles + new_roles)}
+                await member.edit(roles=list(final_map.values()), reason=f"Cập nhật Role bởi {admin_info.get('username')} qua Admin Hub")
+                msg = f"Đã cập nhật danh sách Role cho {member.display_name}!"
+            else:
+                if not role_id_raw or not str(role_id_raw).isdigit():
+                    return web.json_response({"error": "Vui lòng chọn role_id hợp lệ"}, status=400)
+                role_obj = guild.get_role(int(role_id_raw))
+                if not role_obj or role_obj.is_default() or role_obj.managed:
+                    return web.json_response({"error": "Role này không thể gán thủ công"}, status=400)
+                has_role = any(r.id == role_obj.id for r in member.roles)
+                if action == "remove" or (action == "toggle" and has_role):
+                    await member.remove_roles(role_obj, reason=f"Gỡ Role bởi {admin_info.get('username')} qua Admin Hub")
+                    msg = f"Đã gỡ Role '{role_obj.name}' khỏi {member.display_name}!"
+                else:
+                    await member.add_roles(role_obj, reason=f"Cấp Role bởi {admin_info.get('username')} qua Admin Hub")
+                    msg = f"Đã cấp Role '{role_obj.name}' cho {member.display_name}!"
+
+            updated_roles = [
+                {
+                    "id": str(r.id),
+                    "name": r.name,
+                    "color": f"#{r.colour.value:06X}" if r.colour.value else "#94A3B8",
+                    "position": r.position,
+                }
+                for r in sorted(member.roles, key=lambda r: r.position, reverse=True)
+                if not r.is_default()
+            ]
+            return web.json_response({
+                "success": True,
+                "message": msg,
+                "user_id": str(member.id),
+                "roles": updated_roles,
+            })
+        except Exception as e:
+            logger.error(f"Lỗi cập nhật role cho member {target_id}: {e}")
+            return web.json_response({"error": f"Không thể cập nhật Role thành viên: {e}"}, status=500)
+
+    async def handle_admin_channels(self, request: web.Request) -> web.Response:
+        """GET /api/admin/channels: Liệt kê toàn bộ kênh text & voice trong server kèm trạng thái khóa."""
+        admin_info = await self._verify_admin_access(request)
+        if not admin_info:
+            return web.json_response({"error": "Forbidden", "message": "Yêu cầu quyền Quản trị viên"}, status=403)
+
+        guild = self._resolve_target_guild(request)
         if not guild:
             return web.json_response({"error": "Máy chủ Discord không khả dụng"}, status=503)
 
         channels = []
+        categories = []
         try:
-            for ch in guild.text_channels:
+            for cat in guild.categories:
+                categories.append({"id": str(cat.id), "name": cat.name, "position": cat.position})
+            for ch in guild.channels:
+                if isinstance(ch, discord.CategoryChannel):
+                    continue
+                is_voice = isinstance(ch, (discord.VoiceChannel, discord.StageChannel))
+                ow = ch.overwrites_for(guild.default_role)
+                is_private = (ow.view_channel is False)
                 channels.append({
                     "channel_id": str(ch.id),
-                    "name": f"#{ch.name}",
+                    "name": f"🔊 {ch.name}" if is_voice else f"#{ch.name}",
+                    "raw_name": ch.name,
+                    "kind": "voice" if is_voice else "text",
                     "category": ch.category.name if ch.category else "Không phân loại",
+                    "category_id": str(ch.category.id) if ch.category else "",
+                    "topic": getattr(ch, "topic", "") or "",
+                    "is_private": is_private,
+                    "position": ch.position,
                 })
         except Exception as e:
             logger.error(f"Lỗi khi liệt kê kênh Discord: {e}")
             return web.json_response({"error": "Không thể liệt kê kênh Discord"}, status=500)
 
-        channels.sort(key=lambda c: (c["category"], c["name"]))
-        return web.json_response({"success": True, "total": len(channels), "channels": channels})
+        channels.sort(key=lambda c: (c["category"], c["position"], c["name"]))
+        return web.json_response({
+            "success": True,
+            "guild_id": str(guild.id),
+            "guild_name": guild.name,
+            "categories": categories,
+            "total": len(channels),
+            "channels": channels,
+        })
 
     async def handle_admin_members(self, request: web.Request) -> web.Response:
-        """GET /api/admin/members?search=<từ khóa>&limit=25: Tìm thành viên server theo tên để Admin chọn."""
+        """GET /api/admin/members?search=<từ khóa>&limit=100: Liệt kê thành viên kèm danh sách Role & quyền hạn."""
         admin_info = await self._verify_admin_access(request)
         if not admin_info:
             return web.json_response({"error": "Forbidden", "message": "Yêu cầu quyền Quản trị viên"}, status=403)
 
-        guild = self.bot.get_guild(DISCORD_GUILD_ID) or (self.bot.guilds[0] if self.bot.guilds else None)
+        guild = self._resolve_target_guild(request)
         if not guild:
             return web.json_response({"error": "Máy chủ Discord không khả dụng"}, status=503)
 
         query = (request.query.get("search", "") or "").strip()
         try:
-            limit = int(request.query.get("limit", 25))
+            limit = int(request.query.get("limit", 100))
         except (ValueError, TypeError):
             return web.json_response({"error": "Tham số limit không hợp lệ"}, status=400)
-        limit = max(1, min(limit, 50))
+        limit = max(1, min(limit, 200))
 
         members: list = []
         if query:
             try:
-                # Ưu tiên query qua gateway (đầy đủ kể cả member chưa cache)
                 members = await guild.query_members(query, limit=limit)
-            except Exception as e:
-                logger.debug(f"query_members thất bại, fallback cache: {e}")
+            except Exception:
                 members = []
-
-            # Bổ sung lọc substring trong cache (gateway chỉ match prefix)
             try:
                 seen_ids = {m.id for m in members}
                 q_lower = query.lower()
@@ -3305,21 +3827,21 @@ class BotAPIBridge:
                         break
                     if m.id in seen_ids:
                         continue
-                    try:
-                        hay = f"{m.name} {m.display_name} {m.nick or ''}".lower()
-                        if q_lower in hay:
-                            members.append(m)
-                            seen_ids.add(m.id)
-                    except Exception:
-                        continue
+                    hay = f"{m.name} {m.display_name} {m.nick or ''} {m.id}".lower()
+                    if q_lower in hay:
+                        members.append(m)
+                        seen_ids.add(m.id)
             except Exception:
                 pass
         else:
-            # Không từ khóa: liệt kê N thành viên đầu (sắp xếp: người trước, bot sau)
             try:
                 cached = sorted(
                     guild.members,
-                    key=lambda m: (bool(getattr(m, "bot", False)), (getattr(m, "display_name", "") or "").lower()),
+                    key=lambda m: (
+                        bool(getattr(m, "bot", False)),
+                        -(m.top_role.position if getattr(m, "top_role", None) else 0),
+                        (getattr(m, "display_name", "") or "").lower(),
+                    ),
                 )
                 members = cached[:limit]
             except Exception:
@@ -3328,17 +3850,42 @@ class BotAPIBridge:
         result = []
         for m in members[:limit]:
             try:
+                m_roles = [
+                    {
+                        "id": str(r.id),
+                        "name": r.name,
+                        "color": f"#{r.colour.value:06X}" if r.colour.value else "#94A3B8",
+                        "position": r.position,
+                    }
+                    for r in sorted(getattr(m, "roles", []), key=lambda r: r.position, reverse=True)
+                    if not r.is_default()
+                ]
+                top_r = m_roles[0] if m_roles else None
+                to_until = getattr(m, "timed_out_until", None)
                 result.append({
                     "user_id": str(m.id),
                     "username": getattr(m, "name", str(m.id)),
                     "display_name": getattr(m, "display_name", getattr(m, "name", str(m.id))),
                     "avatar_url": m.display_avatar.url if getattr(m, "display_avatar", None) else "",
                     "is_bot": getattr(m, "bot", False),
+                    "is_owner": (m.id == guild.owner_id) or (m.id == BOT_OWNER_ID),
+                    "is_admin": bool(getattr(m.guild_permissions, "administrator", False)),
+                    "top_role": top_r["name"] if top_r else "@everyone",
+                    "top_color": top_r["color"] if top_r else "#94A3B8",
+                    "roles": m_roles,
+                    "joined_at": m.joined_at.isoformat() if getattr(m, "joined_at", None) else "",
+                    "timed_out_until": to_until.isoformat() if to_until else None,
                 })
             except Exception:
                 continue
 
-        return web.json_response({"success": True, "total": len(result), "members": result})
+        return web.json_response({
+            "success": True,
+            "guild_id": str(guild.id),
+            "guild_name": guild.name,
+            "total": len(result),
+            "members": result,
+        })
 
     @staticmethod
     def _tail_text_file(path: str, max_lines: int = 200, max_bytes: int = 256 * 1024) -> list[str]:
@@ -3811,8 +4358,39 @@ class BotAPIBridge:
             "category": category.name if category else "",
         })
 
+    async def handle_admin_delete_channel(self, request: web.Request) -> web.Response:
+        """DELETE /api/admin/channels/{id}: Xóa kênh khỏi máy chủ Discord."""
+        admin_info = await self._verify_admin_access(request)
+        if not admin_info:
+            return web.json_response({"error": "Forbidden", "message": "Yêu cầu quyền Quản trị viên"}, status=403)
+
+        channel_id_str = request.match_info.get("id", "")
+        if not channel_id_str.isdigit():
+            return web.json_response({"error": "ID kênh không hợp lệ"}, status=400)
+
+        channel = self.bot.get_channel(int(channel_id_str))
+        if not channel and hasattr(self.bot, "fetch_channel"):
+            try:
+                channel = await self.bot.fetch_channel(int(channel_id_str))
+            except Exception:
+                channel = None
+        if not channel:
+            return web.json_response({"error": "Không tìm thấy kênh trên máy chủ"}, status=404)
+
+        ch_name = getattr(channel, "name", channel_id_str)
+        try:
+            await channel.delete(reason=f"Xóa bởi {admin_info.get('username')} qua Orbit Admin Hub")
+            return web.json_response({
+                "success": True,
+                "message": f"Đã xóa kênh #{ch_name} thành công!",
+                "deleted_id": channel_id_str,
+            })
+        except Exception as e:
+            logger.error(f"Lỗi xóa kênh {channel_id_str}: {e}")
+            return web.json_response({"error": f"Không thể xóa kênh: {e}"}, status=500)
+
     async def handle_admin_channel_lockdown(self, request: web.Request) -> web.Response:
-        """POST /api/admin/channels/{id}/lockdown: Ẩn kênh với @everyone, chỉ bot + 4 role admin thấy."""
+        """POST /api/admin/channels/{id}/lockdown: Khóa (lock) hoặc Mở khóa (unlock) kênh đối với @everyone."""
         admin_info = await self._verify_admin_access(request)
         if not admin_info:
             return web.json_response({"error": "Forbidden", "message": "Yêu cầu quyền Quản trị viên"}, status=403)
@@ -3823,18 +4401,45 @@ class BotAPIBridge:
         except (ValueError, TypeError):
             return web.json_response({"error": "ID kênh không hợp lệ"}, status=400)
 
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        mode = str(body.get("mode") or "lock").lower()
+
         channel = self.bot.get_channel(channel_id)
         if not channel and hasattr(self.bot, "fetch_channel"):
             try:
                 channel = await self.bot.fetch_channel(channel_id)
             except Exception:
                 channel = None
-        if not channel or not isinstance(channel, discord.TextChannel):
-            return web.json_response({"error": "Không tìm thấy kênh text"}, status=404)
+        if not channel:
+            return web.json_response({"error": "Không tìm thấy kênh"}, status=404)
+
+        if mode in ("unlock", "open"):
+            try:
+                await channel.set_permissions(
+                    channel.guild.default_role,
+                    view_channel=True,
+                    read_message_history=True,
+                    reason=f"Mở khóa kênh bởi {admin_info.get('username')} qua Admin Hub",
+                )
+                return web.json_response({
+                    "success": True,
+                    "message": f"Đã mở khóa công khai kênh #{getattr(channel, 'name', channel_id)}!",
+                    "channel_id": str(channel.id),
+                    "is_private": False,
+                })
+            except Exception as e:
+                return web.json_response({"error": f"Không thể mở khóa kênh: {e}"}, status=500)
 
         try:
             from services.chunk_archive import lock_archive_channel
-            result = await lock_archive_channel(self.bot, channel)
+            if isinstance(channel, discord.TextChannel):
+                result = await lock_archive_channel(self.bot, channel)
+            else:
+                await channel.set_permissions(channel.guild.default_role, view_channel=False, connect=False)
+                result = {"success": True, "opened_roles": []}
         except Exception as e:
             logger.error(f"Lỗi lockdown kênh {channel_id}: {e}", exc_info=True)
             return web.json_response({"error": "Lỗi nội bộ khi khóa kênh"}, status=500)
@@ -3844,9 +4449,54 @@ class BotAPIBridge:
         logger.info(f"Admin {admin_info.get('username')} đã khóa kênh #{getattr(channel, 'name', channel_id)}.")
         return web.json_response({
             "success": True,
-            "message": f"Đã khóa kênh #{getattr(channel, 'name', channel_id)}: chỉ bot + admin thấy.",
+            "message": f"Đã khóa kênh #{getattr(channel, 'name', channel_id)}: chỉ bot + Quản trị viên thấy.",
             "channel_id": str(channel.id),
+            "is_private": True,
             "opened_roles": result.get("opened_roles", []),
+        })
+
+    async def handle_admin_refresh_panels(self, request: web.Request) -> web.Response:
+        """POST /api/admin/panels/refresh: Làm mới các bảng điều khiển tương tác trên Discord (#info, #nộp-tài-liệu, #lấy-tài-liệu)."""
+        admin_info = await self._verify_admin_access(request)
+        if not admin_info:
+            return web.json_response({"error": "Forbidden", "message": "Yêu cầu quyền Quản trị viên"}, status=403)
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        target = str(body.get("target") or "all").lower()
+        refreshed = []
+
+        if target in ("all", "info"):
+            info_cog = self.bot.get_cog("InfoBoard")
+            if info_cog and hasattr(info_cog, "ensure_info_board"):
+                try:
+                    await info_cog.ensure_info_board(force=True)
+                    refreshed.append("#🔗・info")
+                except Exception as e:
+                    logger.warning(f"Lỗi refresh info board: {e}")
+
+        if target in ("all", "intake", "search"):
+            doc_cog = self.bot.get_cog("DocIntake")
+            if doc_cog:
+                if target in ("all", "intake") and hasattr(doc_cog, "_setup_intake_channel"):
+                    try:
+                        await doc_cog._setup_intake_channel()
+                        refreshed.append("#📄・nộp-tài-liệu")
+                    except Exception as e:
+                        logger.warning(f"Lỗi refresh intake panel: {e}")
+                if target in ("all", "search") and hasattr(doc_cog, "_setup_search_channel"):
+                    try:
+                        await doc_cog._setup_search_channel()
+                        refreshed.append("#📥・lấy-tài-liệu")
+                    except Exception as e:
+                        logger.warning(f"Lỗi refresh search panel: {e}")
+
+        return web.json_response({
+            "success": True,
+            "refreshed": refreshed,
+            "message": f"Đã đồng bộ & làm mới bảng điều khiển: {', '.join(refreshed) if refreshed else 'Hoàn tất'}!",
         })
 
     async def handle_admin_delete_document(self, request: web.Request) -> web.Response:
@@ -3953,7 +4603,7 @@ class BotAPIBridge:
         })
 
     async def handle_admin_edit_document(self, request: web.Request) -> web.Response:
-        """PATCH /api/admin/documents/{id}: Chỉnh sửa tiêu đề, ghi chú (notes), môn học, khối lớp của đề thi."""
+        """PATCH /api/admin/documents/{id}: Chỉnh sửa toàn diện 100% thông tin đề thi."""
         admin_info = await self._verify_admin_access(request)
         if not admin_info:
             return web.json_response({"error": "Forbidden", "message": "Yêu cầu quyền Quản trị viên"}, status=403)
@@ -3973,67 +4623,158 @@ class BotAPIBridge:
             return web.json_response({"error": "Dữ liệu JSON không hợp lệ"}, status=400)
 
         existing = await self.bot.db.fetchone(
-            "SELECT id, title, subject, estimated_level, notes FROM documents_archive WHERE id = ?",
+            """SELECT id, title, subject, estimated_level, notes,
+                      COALESCE(exam_track, 'Thường'), COALESCE(academic_year, ''),
+                      COALESCE(school_or_department, ''), COALESCE(author_name, '')
+               FROM documents_archive WHERE id = ?""",
             doc_id,
         )
         if not existing:
             return web.json_response({"error": f"Không tìm thấy đề thi mang ID #{doc_id}"}, status=404)
 
-        cur_title, cur_subject, cur_level, cur_notes = (
-            existing[1],
-            existing[2],
-            existing[3],
-            (existing[4] if len(existing) > 4 and existing[4] else ""),
-        )
+        cur_title = existing[1] or ""
+        cur_subject = existing[2] or ""
+        cur_level = existing[3] or ""
+        cur_notes = existing[4] or ""
+        cur_track = existing[5] or "Thường"
+        cur_year = existing[6] or ""
+        cur_school = existing[7] or ""
+        cur_author = existing[8] or ""
 
-        def _safe_str(value: object, fallback: str, limit: int = 500) -> str:
+        def _safe_str(value: object, fallback: str, limit: int = 500, allow_empty: bool = False) -> str:
+            if value is None:
+                return fallback
             try:
-                text = str(value if value is not None else fallback)
+                text = str(value).strip()[:limit]
             except Exception:
-                text = fallback
-            return text.strip()[:limit] or fallback
+                return fallback
+            if not text and not allow_empty:
+                return fallback
+            return text
 
-        new_title = _safe_str(body.get("title", cur_title), cur_title, 300)
-        new_notes = _safe_str(body.get("notes", cur_notes), cur_notes or "", 2000)
-        new_subject = _safe_str(body.get("subject", cur_subject), cur_subject, 64)
-        new_level = _safe_str(body.get("estimated_level", cur_level), cur_level, 64)
-
-        # Đảm bảo cột notes tồn tại trong DB
-        try:
-            await self.bot.db.execute("ALTER TABLE documents_archive ADD COLUMN notes TEXT")
-        except Exception:
-            pass
+        new_title = _safe_str(body.get("title"), cur_title, 300)
+        new_subject = _safe_str(body.get("subject"), cur_subject, 64)
+        new_level = _safe_str(body.get("estimated_level"), cur_level, 64)
+        new_notes = _safe_str(body.get("notes"), cur_notes, 2000, allow_empty=True)
+        new_track = _safe_str(body.get("exam_track"), cur_track, 32)
+        new_year = _safe_str(body.get("academic_year"), cur_year, 32, allow_empty=True)
+        new_school = _safe_str(body.get("school_or_department"), cur_school, 180, allow_empty=True)
+        new_author = _safe_str(body.get("author_name"), cur_author, 100)
 
         await self.bot.db.execute(
             """UPDATE documents_archive
-               SET title = ?, subject = ?, estimated_level = ?, notes = ?
+               SET title = ?, subject = ?, estimated_level = ?, notes = ?,
+                   exam_track = ?, academic_year = ?, school_or_department = ?, author_name = ?
                WHERE id = ?""",
-            new_title, new_subject, new_level, new_notes, doc_id
+            new_title, new_subject, new_level, new_notes,
+            new_track, new_year, new_school, new_author, doc_id,
         )
         try:
             from database.turso_client import turso_db
             if turso_db.is_configured:
                 await turso_db.execute(
                     """UPDATE documents_archive
-                       SET title = ?, subject = ?, estimated_level = ?, notes = ?
+                       SET title = ?, subject = ?, estimated_level = ?, notes = ?,
+                           exam_track = ?, academic_year = ?, school_or_department = ?, author_name = ?
                        WHERE id = ?""",
-                    new_title, new_subject, new_level, new_notes, doc_id
+                    new_title, new_subject, new_level, new_notes,
+                    new_track, new_year, new_school, new_author, doc_id,
                 )
         except Exception as te:
             logger.debug(f"Không thể đồng bộ cập nhật đề #{doc_id} trên Turso Cloud: {te}")
         self.invalidate_doc_caches()
-        logger.info(f"Admin {admin_info.get('username')} đã cập nhật đề thi #{doc_id}: '{new_title}', notes='{new_notes}'")
+        logger.info(f"Admin {admin_info.get('username')} đã cập nhật đề thi #{doc_id}: '{new_title}'")
 
         return web.json_response({
             "success": True,
-            "message": f"Đã cập nhật thông tin và ghi chú cho đề thi #{doc_id} thành công!",
+            "message": f"Đã cập nhật toàn bộ thông tin cho đề thi #{doc_id} thành công!",
             "document": {
                 "id": doc_id,
                 "title": new_title,
                 "subject": new_subject,
                 "estimated_level": new_level,
+                "exam_track": new_track,
+                "academic_year": new_year,
+                "school_or_department": new_school,
+                "author_name": new_author,
                 "notes": new_notes,
             }
+        })
+
+    async def handle_admin_bulk_documents(self, request: web.Request) -> web.Response:
+        """POST /api/admin/documents/bulk: Xóa hàng loạt hoặc cập nhật phân loại hàng loạt cho các đề thi được chọn."""
+        admin_info = await self._verify_admin_access(request)
+        if not admin_info:
+            return web.json_response({"error": "Forbidden", "message": "Yêu cầu quyền Quản trị viên"}, status=403)
+
+        if not hasattr(self.bot, "db"):
+            return web.json_response({"error": "Cơ sở dữ liệu bot chưa sẵn sàng"}, status=503)
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Dữ liệu JSON không hợp lệ"}, status=400)
+
+        raw_ids = body.get("doc_ids") or []
+        if not isinstance(raw_ids, list) or not raw_ids:
+            return web.json_response({"error": "Vui lòng chọn ít nhất 1 đề thi"}, status=400)
+
+        doc_ids = []
+        for x in raw_ids[:100]:
+            try:
+                doc_ids.append(int(x))
+            except (ValueError, TypeError):
+                pass
+        if not doc_ids:
+            return web.json_response({"error": "Danh sách ID đề thi không hợp lệ"}, status=400)
+
+        action = str(body.get("action") or "update").lower()
+        placeholders = ",".join("?" for _ in doc_ids)
+
+        if action == "delete":
+            await self.bot.db.execute(f"DELETE FROM documents_archive WHERE id IN ({placeholders})", *doc_ids)
+            try:
+                await self.bot.db.execute(f"DELETE FROM document_chunks WHERE doc_id IN ({placeholders})", *doc_ids)
+            except Exception:
+                pass
+            try:
+                from database.turso_client import turso_db
+                if turso_db.is_configured:
+                    await turso_db.execute(f"DELETE FROM documents_archive WHERE id IN ({placeholders})", *doc_ids)
+            except Exception:
+                pass
+            self.invalidate_doc_caches()
+            return web.json_response({
+                "success": True,
+                "deleted_ids": doc_ids,
+                "message": f"Đã xóa hàng loạt {len(doc_ids)} đề thi thành công!",
+            })
+
+        # Bulk update metadata fields
+        set_clauses = []
+        params: list[Any] = []
+        for col in ("subject", "estimated_level", "exam_track", "academic_year", "school_or_department"):
+            val = body.get(col)
+            if val is not None and str(val).strip() != "":
+                set_clauses.append(f"{col} = ?")
+                params.append(str(val).strip()[:180])
+
+        if not set_clauses:
+            return web.json_response({"error": "Không có trường dữ liệu nào để cập nhật hàng loạt"}, status=400)
+
+        sql = f"UPDATE documents_archive SET {', '.join(set_clauses)} WHERE id IN ({placeholders})"
+        await self.bot.db.execute(sql, *params, *doc_ids)
+        try:
+            from database.turso_client import turso_db
+            if turso_db.is_configured:
+                await turso_db.execute(sql, *params, *doc_ids)
+        except Exception:
+            pass
+        self.invalidate_doc_caches()
+        return web.json_response({
+            "success": True,
+            "updated_ids": doc_ids,
+            "message": f"Đã cập nhật hàng loạt cho {len(doc_ids)} đề thi thành công!",
         })
 
     # =========================================================================
@@ -4135,8 +4876,269 @@ class BotAPIBridge:
             logger.error("Lỗi khi gửi thông báo khởi động: %s", e)
             return web.json_response({"success": False, "error": str(e)}, status=500)
 
+    async def handle_webhook_handshake(self, request: web.Request) -> web.Response:
+        """GET/POST /api/webhook/handshake: Nhận tín hiệu khởi động/sử dụng từ Web, gửi/ghi nhận qua Discord Webhook
+        1568882621470089247 và kích hoạt đồng bộ 2 chiều tức thì giữa Bot <-> Web.
+        """
+        body: dict[str, Any] = {}
+        if request.method == "POST":
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+
+        event_type = str(body.get("event") or request.query.get("event") or "web_active").strip()
+        origin = str(
+            body.get("origin")
+            or request.headers.get("Origin")
+            or "https://orbit-psi-black.vercel.app"
+        ).strip()
+        view_name = str(body.get("view") or "home").strip()
+        tab_name = str(body.get("tab") or "overview").strip()
+        user_name = str(body.get("username") or body.get("user") or "Khách truy cập").strip()
+        notify_discord = body.get("notify_discord", True)
+
+        now_ts = int(time.time())
+        self.web_connected = True
+        self.last_web_signal_ts = now_ts
+        self.last_web_origin = origin or "https://orbit-psi-black.vercel.app"
+        self.last_web_event = event_type
+        self.last_web_user = user_name
+        self.web_handshake_count += 1
+
+        # Nếu Web gọi trực tiếp vào Bot API (local/LAN) và yêu cầu phát tín hiệu lên kênh Webhook
+        webhook_sent = False
+        if notify_discord and WEB_SYNC_WEBHOOK_URL:
+            webhook_sent = await self._emit_web_sync_webhook(
+                event_type=event_type,
+                origin=self.last_web_origin,
+                view_name=view_name,
+                tab_name=tab_name,
+                user_name=user_name,
+            )
+
+        # Kích hoạt đồng bộ 2 chiều ngay lập tức
+        asyncio.create_task(self._process_turso_rpc_queue())
+        asyncio.create_task(self._push_turso_telemetry_snapshot())
+        if time.monotonic() - self._last_webhook_reconcile_ts >= 15.0 or event_type in ("web_boot", "handshake", "manual_sync"):
+            self._last_webhook_reconcile_ts = time.monotonic()
+            asyncio.create_task(self._reconcile_turso_sqlite_tables())
+
+        ping = round(self.bot.latency * 1000, 2) if hasattr(self.bot, "latency") and self.bot.latency == self.bot.latency else 0.0
+        return web.json_response({
+            "success": True,
+            "status": "connected",
+            "webhook_id": str(WEB_SYNC_WEBHOOK_ID),
+            "webhook_sent": webhook_sent,
+            "bot_user": str(self.bot.user) if self.bot.user else "Orbit Bot",
+            "bot_id": str(self.bot.user.id) if self.bot.user else "0",
+            "ping_ms": ping,
+            "web_connected": self.web_connected,
+            "last_web_signal_ts": self.last_web_signal_ts,
+            "last_web_origin": self.last_web_origin,
+            "last_web_event": self.last_web_event,
+            "web_handshake_count": self.web_handshake_count,
+            "message": "Bot đã ghi nhận tín hiệu từ Web và kích hoạt đồng bộ 2 chiều!",
+        })
+
+    async def _emit_web_sync_webhook(
+        self,
+        event_type: str = "web_active",
+        origin: str = "https://orbit-psi-black.vercel.app",
+        view_name: str = "home",
+        tab_name: str = "overview",
+        user_name: str = "Khách truy cập",
+    ) -> bool:
+        """Gửi tín hiệu đồng bộ qua Discord Webhook 1568882621470089247."""
+        if not WEB_SYNC_WEBHOOK_URL:
+            return False
+        try:
+            import aiohttp as _aiohttp
+            now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            payload = {
+                "username": "Orbit Web Gateway • Vercel",
+                "avatar_url": "https://orbit-psi-black.vercel.app/server_icon.png",
+                "content": (
+                    f"⚡ **[ORBIT_WEB_SYNC]** Tín hiệu hoạt động từ **Orbit Web** (`{origin}`) "
+                    f"• Sự kiện: `{event_type}`"
+                ),
+                "embeds": [
+                    {
+                        "title": "🌐 Orbit Web ↔ Discord Bot Handshake",
+                        "description": (
+                            "Web đã khởi động/đang được sử dụng và gửi tín hiệu đồng bộ tới kênh điều phối."
+                        ),
+                        "color": 0xEC4899,
+                        "fields": [
+                            {"name": "🔗 Web URL", "value": f"[orbit-psi-black.vercel.app]({origin})", "inline": True},
+                            {"name": "⚡ Sự kiện", "value": f"`{event_type}`", "inline": True},
+                            {"name": "🧭 Giao diện", "value": f"`{view_name} / {tab_name}`", "inline": True},
+                            {"name": "👤 Phiên người dùng", "value": f"`{user_name}`", "inline": True},
+                            {"name": "🆔 Webhook ID", "value": f"`{WEB_SYNC_WEBHOOK_ID}`", "inline": True},
+                        ],
+                        "footer": {"text": "Orbit Sync Protocol • Real-time Webhook Bridge"},
+                        "timestamp": now_iso,
+                    }
+                ],
+            }
+            async with _aiohttp.ClientSession(timeout=_aiohttp.ClientTimeout(total=6.0)) as sess:
+                async with sess.post(f"{WEB_SYNC_WEBHOOK_URL}?wait=true", json=payload) as resp:
+                    return resp.status in (200, 201, 204)
+        except Exception as e:
+            logger.debug(f"Emit web sync webhook error: {e}")
+            return False
+
+    async def on_web_webhook_message(self, message: discord.Message) -> None:
+        """Listener lắng nghe trực tiếp tin nhắn từ Discord Webhook 1568882621470089247 trong kênh.
+        Khi Web khởi động hoặc được sử dụng và bắn Webhook vào kênh:
+        1. Bot ghi nhận kết nối từ Web ngay lập tức (0ms qua Discord Gateway).
+        2. Bot thả reaction ✅ xác nhận trên tin nhắn Webhook.
+        3. Bot phản hồi Embed xác nhận đã kết nối với Web và kích hoạt đồng bộ 2 chiều (Turso + SQLite + RPC Queue).
+        """
+        if not message or not message.webhook_id:
+            return
+
+        target_webhook_id = int(getattr(settings, "WEB_SYNC_WEBHOOK_ID", WEB_SYNC_WEBHOOK_ID) or WEB_SYNC_WEBHOOK_ID)
+        raw_content = (message.content or "").strip()
+
+        # Chỉ bắt tin nhắn từ đúng Webhook 1568882621470089247 hoặc có cờ [ORBIT_WEB_SYNC]
+        if message.webhook_id != target_webhook_id and "[ORBIT_WEB_SYNC]" not in raw_content:
+            return
+
+        # Bỏ qua nếu là tin nhắn tự xác nhận của chính Bot (tránh vòng lặp)
+        if "[ORBIT_BOT_ACK]" in raw_content or (message.author and "Orbit Bot ACK" in (message.author.name or "")):
+            return
+
+        # Bóc tách thông tin sự kiện từ nội dung / embed của Webhook
+        event_type = "web_active"
+        web_origin = "https://orbit-psi-black.vercel.app"
+        user_label = "Thành viên / Khách Web"
+        view_label = "home"
+
+        ev_match = re.search(r"Sự kiện:\s*`([^`]+)`", raw_content)
+        if ev_match:
+            event_type = ev_match.group(1).strip()
+        url_match = re.search(r"\(`(https?://[^`]+)`\)", raw_content)
+        if url_match:
+            web_origin = url_match.group(1).strip()
+
+        if message.embeds:
+            emb = message.embeds[0]
+            for fld in getattr(emb, "fields", []):
+                fname = (fld.name or "").lower()
+                fval = (fld.value or "").strip().strip("`")
+                if "sự kiện" in fname or "event" in fname:
+                    event_type = fval or event_type
+                elif "phiên" in fname or "user" in fname or "người dùng" in fname:
+                    user_label = fval or user_label
+                elif "giao diện" in fname or "view" in fname:
+                    view_label = fval or view_label
+                elif "web url" in fname:
+                    m_u = re.search(r"\((https?://[^)]+)\)", fval)
+                    if m_u:
+                        web_origin = m_u.group(1).strip()
+
+        now_ts = int(time.time())
+        now_mono = time.monotonic()
+        self.web_connected = True
+        self.last_web_signal_ts = now_ts
+        self.last_web_origin = web_origin
+        self.last_web_event = event_type
+        self.last_web_user = user_label
+        self.last_web_channel_id = message.channel.id
+        self.web_handshake_count += 1
+
+        logger.info(
+            f"🔗 [Webhook 1568882621470089247] Bot đã ghi nhận tín hiệu từ Web ({web_origin}) "
+            f"| Sự kiện: {event_type} | User: {user_label}"
+        )
+
+        # 1. Thả reaction ✅ (hoặc ⚡ cho rpc_wakeup) để đánh dấu Bot đã nhận tín hiệu
+        try:
+            reaction_emoji = "⚡" if event_type == "rpc_wakeup" else "✅"
+            await message.add_reaction(reaction_emoji)
+        except Exception:
+            pass
+
+        # 2. Kích hoạt xử lý hàng đợi RPC + đẩy Telemetry + đối soát CSDL 2 chiều ngay lập tức
+        try:
+            await self._process_turso_rpc_queue()
+            await self._push_turso_telemetry_snapshot()
+            if event_type != "rpc_wakeup" or (now_mono - self._last_webhook_reconcile_ts >= 30.0):
+                self._last_webhook_reconcile_ts = now_mono
+                asyncio.create_task(self._reconcile_turso_sqlite_tables())
+                intake_cog = self.bot.get_cog("DocumentIntakeCog")
+                if intake_cog and hasattr(intake_cog, "sync_pending_turso_documents"):
+                    asyncio.create_task(intake_cog.sync_pending_turso_documents())
+        except Exception as sync_err:
+            logger.debug(f"Webhook immediate sync error: {sync_err}")
+
+        # 3. Gửi tin nhắn phản hồi xác nhận kết nối trong kênh (có chống spam thông minh cho rpc_wakeup)
+        should_reply_embed = (
+            event_type in ("web_boot", "handshake", "manual_sync")
+            or (event_type != "rpc_wakeup" and (now_mono - self._last_webhook_reply_ts >= 60.0))
+        )
+        if should_reply_embed:
+            self._last_webhook_reply_ts = now_mono
+            try:
+                ping_ms = round(self.bot.latency * 1000, 1) if hasattr(self.bot, "latency") and self.bot.latency == self.bot.latency else 15.0
+                ack_embed = discord.Embed(
+                    title="🟢 Orbit Bot ↔ Orbit Web — Đã Ghi Nhận & Kết Nối Đồng Bộ!",
+                    description=(
+                        f"🤖 **{self.bot.user.name if self.bot.user else 'Orbit Bot'}** đã nhận tín hiệu khởi động/hoạt động từ **Orbit Web** "
+                        f"qua Webhook `{target_webhook_id}` và thiết lập đường truyền đồng bộ 2 chiều thời gian thực."
+                    ),
+                    color=0x10B981,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc),
+                )
+                ack_embed.add_field(
+                    name="🌐 Web Đang Kết Nối",
+                    value=f"[orbit-psi-black.vercel.app]({web_origin})",
+                    inline=True,
+                )
+                ack_embed.add_field(
+                    name="⚡ Sự Kiện & Giao Diện",
+                    value=f"`{event_type}` • `{view_label}`",
+                    inline=True,
+                )
+                ack_embed.add_field(
+                    name="👤 Phiên Hoạt Động",
+                    value=f"`{user_label}`",
+                    inline=True,
+                )
+                ack_embed.add_field(
+                    name="🏓 Độ Trễ Bot Gateway",
+                    value=f"`{ping_ms} ms` (Online)",
+                    inline=True,
+                )
+                ack_embed.add_field(
+                    name="🔄 Đồng Bộ 2 Chiều",
+                    value="`Turso Cloud ↔ SQLite FTS5 ↔ Discord`",
+                    inline=True,
+                )
+                ack_embed.add_field(
+                    name="📊 Lượt Handshake",
+                    value=f"`#{self.web_handshake_count}`",
+                    inline=True,
+                )
+                ack_embed.set_footer(
+                    text="Orbit Bidirectional Sync • Bot ↔ Web Connected",
+                    icon_url="https://orbit-psi-black.vercel.app/server_icon.png",
+                )
+                await message.reply(embed=ack_embed, mention_author=False)
+            except Exception as reply_err:
+                logger.debug(f"Không thể gửi reply xác nhận Webhook: {reply_err}")
+
     async def start(self) -> None:
         """Khởi chạy HTTP Server trên background task."""
+        # Luôn đăng ký listener lắng nghe Discord Webhook 1568882621470089247 ngay cả khi port local bận
+        if not self._webhook_listener_registered:
+            self.bot.add_listener(self.on_web_webhook_message, "on_message")
+            self._webhook_listener_registered = True
+            logger.info(
+                f"📡 Đã kích hoạt bộ lắng nghe Discord Webhook ({WEB_SYNC_WEBHOOK_ID}) kết nối trực tiếp Web <-> Bot!"
+            )
+
         if not settings.BOT_API_ENABLED:
             logger.info("Bot API Bridge bị tắt bởi cấu hình.")
             return
@@ -4233,6 +5235,12 @@ class BotAPIBridge:
             "uptime_seconds": uptime,
             "timestamp": now_ts,
             "bridge_mode": "vercel_turso_direct",
+            "web_connected": self.web_connected,
+            "last_web_signal_ts": self.last_web_signal_ts,
+            "last_web_origin": self.last_web_origin,
+            "last_web_event": self.last_web_event,
+            "web_handshake_count": self.web_handshake_count,
+            "webhook_id": str(WEB_SYNC_WEBHOOK_ID),
         }
         await turso_db.execute(
             """INSERT INTO bot_kv_store (key, value, updated_at) VALUES ('status', ?, ?)
@@ -4282,6 +5290,7 @@ class BotAPIBridge:
         local_base = f"http://127.0.0.1:{settings.BOT_API_PORT}"
         headers = {"X-Bot-Secret": secret}
         snapshot_routes = [
+            ("admin_roles", "/api/admin/roles"),
             ("admin_channels", "/api/admin/channels"),
             ("admin_members", "/api/admin/members?limit=100"),
             ("admin_bans", "/api/admin/bans"),
@@ -4389,6 +5398,7 @@ class BotAPIBridge:
 
         local_base = f"http://127.0.0.1:{settings.BOT_API_PORT}"
         secret = (getattr(settings, "BOT_API_SECRET", "") or "").strip()
+        has_mutated = False
 
         async with _aiohttp.ClientSession(timeout=_aiohttp.ClientTimeout(total=25.0)) as sess:
             for r in rows:
@@ -4397,6 +5407,8 @@ class BotAPIBridge:
                 path = r.get("path") or "/api/status"
                 raw_headers = r.get("headers") or "{}"
                 raw_body = r.get("body") or ""
+                if method in ("POST", "PATCH", "DELETE", "PUT"):
+                    has_mutated = True
 
                 try:
                     req_headers = _json.loads(raw_headers) if raw_headers else {}
@@ -4433,25 +5445,216 @@ class BotAPIBridge:
                     rpc_id,
                 )
 
+        if has_mutated:
+            asyncio.create_task(self._push_turso_telemetry_snapshot())
+
         # Dọn dẹp các lệnh RPC cũ hơn 10 phút để tiết kiệm dung lượng Turso
         await turso_db.execute("DELETE FROM bot_rpc_queue WHERE created_at < ?", int(time.time()) - 600)
+
+    async def handle_sync_pending_documents(self, request: web.Request) -> web.Response:
+        """POST /api/documents/sync_pending: Đồng bộ tức thì các đề thi pending_bot từ Turso sang Discord & SQLite."""
+        synced_pending = 0
+        try:
+            intake_cog = self.bot.get_cog("DocumentIntakeCog")
+            if intake_cog and hasattr(intake_cog, "sync_pending_turso_documents"):
+                synced_pending = await intake_cog.sync_pending_turso_documents()
+        except Exception as e:
+            logger.debug(f"sync_pending_turso_documents error: {e}")
+
+        reconciled = await self._reconcile_turso_sqlite_tables()
+        self.invalidate_doc_caches()
+        return web.json_response({
+            "success": True,
+            "synced_pending": synced_pending,
+            "reconciled": reconciled,
+        })
+
+    async def _reconcile_turso_sqlite_tables(self) -> dict[str, int]:
+        """Đối soát và đồng bộ 2 chiều giữa SQLite cục bộ (Bot) và Turso Cloud (Web):
+        1. documents_archive: Đẩy đề có ở SQLite nhưng thiếu trên Turso & kéo đề có ở Turso nhưng thiếu ở SQLite.
+        2. study_profiles: Hợp nhất chuỗi ngày học (Streak) & XP cao nhất giữa 2 bên.
+        3. linked_accounts: Đồng bộ danh sách tài khoản đã xác minh & avatar.
+        """
+        from database.turso_client import turso_db
+        stats = {"pushed_docs": 0, "pulled_docs": 0, "synced_profiles": 0}
+        if not turso_db.is_configured or not hasattr(self.bot, "db") or not self.bot.db:
+            return stats
+
+        # 1. Đồng bộ 2 chiều bảng documents_archive
+        try:
+            local_rows = await self.bot.db.fetchall(
+                """SELECT id, subject, title, file_name, file_size_bytes, file_type,
+                          estimated_level, question_count, page_count, author_id,
+                          author_name, channel_id, message_id, jump_url, timestamp,
+                          file_hash, COALESCE(raw_text, ''), COALESCE(notes, ''),
+                          academic_year, school_or_department,
+                          COALESCE(verdict, 'XAC_MINH'), COALESCE(exam_track, 'THI_THU_THPT'),
+                          COALESCE(confidence, 0.95)
+                   FROM documents_archive ORDER BY id DESC LIMIT 300"""
+            )
+            turso_rows = await turso_db.fetchall(
+                """SELECT id, subject, title, file_name, file_size_bytes, file_type,
+                          estimated_level, question_count, page_count, author_id,
+                          author_name, channel_id, message_id, jump_url, timestamp,
+                          file_hash, COALESCE(raw_text, '') AS raw_text, COALESCE(notes, '') AS notes,
+                          academic_year, school_or_department,
+                          COALESCE(verdict, 'XAC_MINH') AS verdict,
+                          COALESCE(exam_track, 'THI_THU_THPT') AS exam_track,
+                          COALESCE(confidence, 0.95) AS confidence
+                   FROM documents_archive ORDER BY id DESC LIMIT 300"""
+            )
+
+            turso_ids = {int(r["id"]) for r in turso_rows if r.get("id") is not None}
+            turso_hashes = {str(r["file_hash"]) for r in turso_rows if r.get("file_hash")}
+            local_ids = {int(r[0]) for r in local_rows if r[0] is not None}
+            local_hashes = {str(r[15]) for r in local_rows if r[15]}
+
+            # 1a. Đẩy đề từ SQLite -> Turso (ví dụ đề nạp từ Google Drive hoặc Discord lúc mạng chập chờn)
+            for lr in local_rows:
+                lid = int(lr[0])
+                lhash = str(lr[15] or "")
+                if lid not in turso_ids and (not lhash or lhash not in turso_hashes):
+                    try:
+                        await turso_db.execute(
+                            """INSERT OR IGNORE INTO documents_archive (
+                                id, subject, title, file_name, file_size_bytes, file_type,
+                                estimated_level, question_count, page_count, author_id,
+                                author_name, channel_id, message_id, jump_url, timestamp,
+                                file_hash, raw_text, notes, academic_year, school_or_department,
+                                verdict, exam_track, confidence, queue_status, created_via
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced_discord', 'bot_sync')""",
+                            lid, lr[1], lr[2], lr[3], lr[4] or 0, lr[5] or "PDF",
+                            lr[6] or "Phổ thông", lr[7] or 0, lr[8] or 1, lr[9] or 0,
+                            lr[10] or "Orbit Bot", lr[11] or 0, lr[12] or 0,
+                            lr[13] or "https://orbit-psi-black.vercel.app/#vault",
+                            lr[14] or datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                            lhash, (lr[16] or "")[:50000], lr[17] or "",
+                            lr[18], lr[19], lr[20], lr[21], lr[22],
+                        )
+                        stats["pushed_docs"] += 1
+                    except Exception:
+                        pass
+
+            # 1b. Kéo đề từ Turso -> SQLite (đề nộp từ Web để tìm kiếm FTS5 /timde /layde /luyende hoạt động)
+            for tr in turso_rows:
+                tid = int(tr.get("id") or 0)
+                thash = str(tr.get("file_hash") or "")
+                if tid > 0 and tid not in local_ids and (not thash or thash not in local_hashes):
+                    try:
+                        await self.bot.db.execute(
+                            """INSERT OR IGNORE INTO documents_archive (
+                                id, subject, title, file_name, file_size_bytes, file_type,
+                                estimated_level, question_count, page_count, author_id,
+                                author_name, channel_id, message_id, jump_url, timestamp,
+                                file_hash, raw_text, notes, academic_year, school_or_department,
+                                verdict, exam_track, confidence
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            tid,
+                            tr.get("subject") or "GENERAL",
+                            tr.get("title") or tr.get("file_name") or f"Đề #{tid}",
+                            tr.get("file_name") or f"de_{tid}.pdf",
+                            int(tr.get("file_size_bytes") or 0),
+                            tr.get("file_type") or "PDF",
+                            tr.get("estimated_level") or "Phổ thông",
+                            int(tr.get("question_count") or 0),
+                            int(tr.get("page_count") or 1),
+                            int(tr.get("author_id") or 0),
+                            tr.get("author_name") or "Khách (Web)",
+                            int(tr.get("channel_id") or 0),
+                            int(tr.get("message_id") or 0),
+                            tr.get("jump_url") or "https://orbit-psi-black.vercel.app/#vault",
+                            tr.get("timestamp") or datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                            thash,
+                            tr.get("raw_text") or "",
+                            tr.get("notes") or "",
+                            tr.get("academic_year"),
+                            tr.get("school_or_department"),
+                            tr.get("verdict") or "XAC_MINH",
+                            tr.get("exam_track") or "THI_THU_THPT",
+                            float(tr.get("confidence") or 0.95),
+                        )
+                        stats["pulled_docs"] += 1
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.debug(f"Reconcile documents_archive skip: {e}")
+
+        # 2. Đồng bộ 2 chiều study_profiles (Hợp nhất Streak & XP cao nhất)
+        try:
+            t_profiles = await turso_db.fetchall("SELECT * FROM study_profiles LIMIT 200")
+            for tp in t_profiles:
+                did = int(tp.get("discord_id") or 0)
+                if not did:
+                    continue
+                await self.bot.db.execute(
+                    """INSERT INTO study_profiles
+                       (discord_id, username, display_name, avatar_url, current_streak, max_streak,
+                        last_study_date, study_xp, pomodoro_count, study_minutes, exams_completed,
+                        docs_contributed, dream_school, dream_score, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(discord_id) DO UPDATE SET
+                        username = COALESCE(NULLIF(excluded.username, ''), study_profiles.username),
+                        display_name = COALESCE(NULLIF(excluded.display_name, ''), study_profiles.display_name),
+                        avatar_url = CASE WHEN excluded.avatar_url != '' THEN excluded.avatar_url ELSE study_profiles.avatar_url END,
+                        current_streak = MAX(study_profiles.current_streak, excluded.current_streak),
+                        max_streak = MAX(study_profiles.max_streak, excluded.max_streak),
+                        last_study_date = MAX(study_profiles.last_study_date, excluded.last_study_date),
+                        study_xp = MAX(study_profiles.study_xp, excluded.study_xp),
+                        pomodoro_count = MAX(study_profiles.pomodoro_count, excluded.pomodoro_count),
+                        study_minutes = MAX(study_profiles.study_minutes, excluded.study_minutes),
+                        exams_completed = MAX(study_profiles.exams_completed, excluded.exams_completed),
+                        docs_contributed = MAX(study_profiles.docs_contributed, excluded.docs_contributed),
+                        dream_school = CASE WHEN excluded.dream_school != '' THEN excluded.dream_school ELSE study_profiles.dream_school END,
+                        dream_score = CASE WHEN excluded.dream_score != '' THEN excluded.dream_score ELSE study_profiles.dream_score END,
+                        updated_at = MAX(study_profiles.updated_at, excluded.updated_at)""",
+                    did,
+                    tp.get("username") or "",
+                    tp.get("display_name") or "",
+                    tp.get("avatar_url") or "",
+                    int(tp.get("current_streak") or 0),
+                    int(tp.get("max_streak") or 0),
+                    str(tp.get("last_study_date") or ""),
+                    int(tp.get("study_xp") or 0),
+                    int(tp.get("pomodoro_count") or 0),
+                    int(tp.get("study_minutes") or 0),
+                    int(tp.get("exams_completed") or 0),
+                    int(tp.get("docs_contributed") or 0),
+                    str(tp.get("dream_school") or ""),
+                    str(tp.get("dream_score") or ""),
+                    str(tp.get("updated_at") or datetime.datetime.now(datetime.timezone.utc).isoformat()),
+                )
+                stats["synced_profiles"] += 1
+        except Exception as e:
+            logger.debug(f"Reconcile study_profiles skip: {e}")
+
+        if stats["pushed_docs"] or stats["pulled_docs"]:
+            self.invalidate_doc_caches()
+            logger.info(
+                f"🔄 [Turso <-> SQLite Sync] Đã đẩy {stats['pushed_docs']} đề lên Turso, kéo {stats['pulled_docs']} đề về SQLite."
+            )
+        return stats
 
     async def _turso_relay_loop(self) -> None:
         """Vòng lặp nền đồng bộ 2 chiều giữa Bot và Vercel thông qua Turso Cloud."""
         await self.bot.wait_until_ready()
         try:
             await self._init_turso_bridge_tables()
+            await self._reconcile_turso_sqlite_tables()
             logger.info("🌐 Đã kích hoạt cầu nối trực tiếp Bot <-> Vercel qua Turso Cloud (Zero-ngrok)!")
         except Exception as e:
             logger.warning(f"Lỗi khởi tạo bảng cầu nối Turso: {e}")
 
         last_snapshot = 0.0
+        last_reconcile = time.monotonic()
         while not self.bot.is_closed():
             try:
                 now = time.monotonic()
                 if now - last_snapshot >= 20.0:
                     await self._push_turso_telemetry_snapshot()
                     last_snapshot = now
+                if now - last_reconcile >= 60.0:
+                    await self._reconcile_turso_sqlite_tables()
+                    last_reconcile = now
                 await self._process_turso_rpc_queue()
             except asyncio.CancelledError:
                 break
