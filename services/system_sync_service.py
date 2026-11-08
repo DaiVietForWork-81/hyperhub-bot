@@ -345,10 +345,6 @@ class SystemSyncService:
             if ext not in target_cogs and not ext.startswith("not_finished."):
                 target_cogs.append(ext)
 
-        for arch in ["cogs.profile", "cogs.ranked_duel"]:
-            if arch in target_cogs:
-                target_cogs.remove(arch)
-
         reloaded: List[str] = []
         failed: List[str] = []
 
