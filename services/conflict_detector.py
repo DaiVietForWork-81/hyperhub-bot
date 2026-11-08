@@ -68,6 +68,7 @@ class ConflictLexiconManager:
         self.file_path = file_path
         self.casual_banter: set[str] = set()
         self.hostile_triggers: set[str] = set()
+        self.provocative_raw: list[str] = []
         self.provocative_patterns: list[re.Pattern] = []
         self.learned_slang: dict[str, dict[str, Any]] = {}
         self.load()
@@ -78,12 +79,22 @@ class ConflictLexiconManager:
             return
 
         try:
+            if self.file_path.stat().st_size > 256 * 1024:
+                log.warning("File lexicon quá lớn (%d bytes), khôi phục mặc định.", self.file_path.stat().st_size)
+                self._save_default()
+                return
             with open(self.file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             self.casual_banter = {w.lower() for w in data.get("casual_banter", [])}
             self.hostile_triggers = {w.lower() for w in data.get("hostile_triggers", [])}
+            raw_pats = []
+            for p in data.get("provocative_patterns", []):
+                clean_p = str(p).replace("\\", "").strip()
+                if clean_p and clean_p not in raw_pats:
+                    raw_pats.append(clean_p)
+            self.provocative_raw = raw_pats
             self.provocative_patterns = [
-                re.compile(re.escape(p), re.IGNORECASE) for p in data.get("provocative_patterns", [])
+                re.compile(re.escape(p), re.IGNORECASE) for p in self.provocative_raw
             ]
             self.learned_slang = data.get("learned_slang", {})
         except Exception as e:
@@ -120,7 +131,7 @@ class ConflictLexiconManager:
         data = {
             "casual_banter": sorted(list(self.casual_banter)),
             "hostile_triggers": sorted(list(self.hostile_triggers)),
-            "provocative_patterns": [p.pattern for p in self.provocative_patterns],
+            "provocative_patterns": self.provocative_raw,
             "learned_slang": self.learned_slang,
         }
         try:
