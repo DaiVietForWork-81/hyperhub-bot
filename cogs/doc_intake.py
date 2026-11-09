@@ -349,40 +349,53 @@ class DocumentIntakeCog(commands.Cog):
 
     async def run_45s_batch_cloud_analysis(self) -> int:
         """
-        Cứ 45 giây: Tổng hợp tất cả các file mà Bot đã list/thu thập được (trong hàng đợi 45s
-        hoặc trong documents_archive chưa qua bước thẩm định sâu) để gửi về Model 550B đọc & phân loại.
+        Cứ 45 giây: Tổng hợp tất cả các đề thi đã được thu thập/tổng hợp (trong hàng đợi 45s
+        hoặc trong documents_archive chưa qua bước thẩm định sâu) để Bot & AI Agent 3 Tầng (550B) tự động quét, chuẩn hóa nhãn và đồng bộ lên Turso Cloud.
         """
+        import json
+        import time
+        from datetime import datetime, timezone
         from DocInspector.cloud_verifier import CloudExamVerifier
         from database.turso_client import turso_db
 
-        # 1. Rà soát các file mới được list trong SQLite local chưa có nhãn CLOUD_DEEP_VERIFIED
+        track_vi_map = {
+            "THUONG": "Thường",
+            "CHUYEN": "Chuyên",
+            "HSG": "HSG",
+            "QUOC_TE": "Quốc tế",
+        }
+
+        # 1. Rà soát các đề đã tổng hợp trong SQLite local chưa có nhãn CLOUD_DEEP_VERIFIED
         if hasattr(self.bot, "db"):
             try:
                 unverified_rows = await self.bot.db.fetchall(
                     """
-                    SELECT id, file_name, COALESCE(raw_text, ''), subject, estimated_level
+                    SELECT id, file_name, COALESCE(raw_text, ''), COALESCE(notes, ''), subject, estimated_level
                     FROM documents_archive
                     WHERE (quorum_status IS NULL OR quorum_status NOT IN ('CLOUD_DEEP_VERIFIED', 'UNANIMOUS_3_3'))
                     ORDER BY id DESC
                     LIMIT 12
                     """
                 )
-                for r_id, r_fname, r_text, r_subj, r_lvl in unverified_rows:
+                for r_id, r_fname, r_text, r_notes, r_subj, r_lvl in unverified_rows:
+                    combined_text = (r_text or "").strip() or f"Đề thi: {r_fname}\nMô tả: {r_notes or ''}"
                     CloudExamVerifier.enqueue_for_45s_batch(
                         doc_id=r_id,
                         file_name=r_fname or f"doc_{r_id}.pdf",
-                        raw_text=r_text or f"Tài liệu: {r_fname}",
+                        raw_text=combined_text,
                         metadata={"source": "sqlite", "old_subject": r_subj, "old_level": r_lvl},
                     )
             except Exception as e:
                 log.debug("Bỏ qua quét SQLite trong chu kỳ 45s: %s", e)
 
-        # 2. Rà soát các file mới trên Turso Cloud
+        # 2. Rà soát các đề đã tổng hợp trên Turso Cloud
         if turso_db.is_configured:
             try:
                 turso_rows = await turso_db.fetchall(
                     """
-                    SELECT id, file_name, COALESCE(raw_text, '') AS raw_text, subject, estimated_level
+                    SELECT id, COALESCE(title, file_name) AS title, file_name,
+                           COALESCE(raw_text, '') AS raw_text, COALESCE(notes, '') AS notes,
+                           subject, estimated_level
                     FROM documents_archive
                     WHERE (verdict IS NULL OR verdict != 'CLOUD_DEEP_VERIFIED')
                     ORDER BY id DESC
@@ -391,34 +404,38 @@ class DocumentIntakeCog(commands.Cog):
                 )
                 for tr in turso_rows:
                     t_id = tr.get("id")
-                    t_fname = tr.get("file_name") or f"doc_{t_id}.pdf"
-                    t_text = tr.get("raw_text") or f"Tài liệu: {t_fname}"
+                    t_title = tr.get("title") or tr.get("file_name") or f"doc_{t_id}.pdf"
+                    t_fname = tr.get("file_name") or t_title
+                    t_text = (tr.get("raw_text") or "").strip()
+                    t_notes = (tr.get("notes") or "").strip()
+                    combined_turso_text = t_text if len(t_text) >= 20 else f"Tiêu đề đề thi: {t_title}\nTên tệp: {t_fname}\nGhi chú: {t_notes}"
                     if t_id:
                         CloudExamVerifier.enqueue_for_45s_batch(
                             doc_id=t_id,
                             file_name=t_fname,
-                            raw_text=t_text,
-                            metadata={"source": "turso"},
+                            raw_text=combined_turso_text,
+                            metadata={"source": "turso", "title": t_title},
                         )
             except Exception as e:
                 log.debug("Bỏ qua quét Turso trong chu kỳ 45s: %s", e)
 
-        # 3. Đẩy toàn bộ lô đã gom trong 45s qua lên Model 550B (timeout < 60s/file)
+        # 3. Đẩy toàn bộ lô đã gom trong 45s qua lên AI Agent 3 Tầng (Model 550B)
         completed = await asyncio.to_thread(CloudExamVerifier.flush_45s_batch, 16)
-        if not completed:
-            return 0
-
         updated_count = 0
-        for item in completed:
+        recent_scanned_items = []
+
+        for item in completed or []:
             doc_id = item.get("doc_id")
             v = item.get("verified") or {}
             new_subj = str(v.get("subject") or "").upper()
             new_grade = str(v.get("grade_level") or "").strip()
             new_detailed = str(v.get("detailed_exam_track") or "").strip()
-            new_track = str(v.get("exam_track") or "").upper()
+            raw_track = str(v.get("exam_track") or "THUONG").upper()
+            new_track = track_vi_map.get(raw_track, raw_track or "Thường")
             new_school = v.get("school_or_department")
             new_year = v.get("academic_year")
             new_desc = str(v.get("exam_description") or "").strip()
+            short_label = str(v.get("short_label") or "").strip()
 
             est_level = new_grade
             if new_detailed and new_detailed not in est_level:
@@ -479,9 +496,69 @@ class DocumentIntakeCog(commands.Cog):
                     except Exception:
                         pass
                 updated_count += 1
+                recent_scanned_items.append({
+                    "id": num_id,
+                    "file_name": item.get("file_name") or f"De_thi_{num_id}",
+                    "subject": subj_to_set or "MATHEMATICS",
+                    "estimated_level": est_level,
+                    "exam_track": new_track,
+                    "short_label": short_label,
+                    "exam_description": new_desc,
+                    "scanned_at": datetime.now(timezone.utc).isoformat(),
+                })
+
+        # 4. Lưu trạng thái Radar Quét Tự Động 45s lên Turso bot_kv_store để Web hiển thị thời gian thực
+        if turso_db.is_configured:
+            try:
+                now_ts = int(time.time())
+                stats_row = await turso_db.fetchone(
+                    """
+                    SELECT COUNT(*) AS total_docs,
+                           SUM(CASE WHEN verdict = 'CLOUD_DEEP_VERIFIED' THEN 1 ELSE 0 END) AS verified_docs
+                    FROM documents_archive
+                    """
+                )
+                total_docs = int((stats_row or {}).get("total_docs") or 0)
+                verified_docs = int((stats_row or {}).get("verified_docs") or 0)
+                unverified_docs = max(0, total_docs - verified_docs)
+
+                prev_kv = await turso_db.fetchone(
+                    "SELECT value FROM bot_kv_store WHERE key = 'bot_45s_scanner_status'"
+                )
+                prev_recent = []
+                if prev_kv and prev_kv.get("value"):
+                    try:
+                        prev_recent = json.loads(prev_kv["value"]).get("recent_scanned") or []
+                    except Exception:
+                        prev_recent = []
+
+                merged_recent = (recent_scanned_items + prev_recent)[:12]
+                scanner_payload = {
+                    "active": True,
+                    "interval_seconds": 45,
+                    "last_scan_ts": now_ts,
+                    "next_scan_ts": now_ts + 45,
+                    "last_batch_updated": updated_count,
+                    "total_docs": total_docs,
+                    "verified_docs": verified_docs,
+                    "unverified_docs": unverified_docs,
+                    "quota": CloudExamVerifier.get_quota_stats(),
+                    "recent_scanned": merged_recent,
+                }
+                await turso_db.execute(
+                    """
+                    INSERT INTO bot_kv_store (key, value, updated_at)
+                    VALUES ('bot_45s_scanner_status', ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                    """,
+                    json.dumps(scanner_payload, ensure_ascii=False),
+                    now_ts,
+                )
+            except Exception as e:
+                log.debug("Không thể ghi bot_45s_scanner_status lên Turso: %s", e)
 
         if updated_count > 0:
-            log.info("✅ [Chu kỳ 45s] Đã đọc & cập nhật phân loại chuyên sâu cho %d tài liệu.", updated_count)
+            log.info("✅ [Chu kỳ 45s] Bot đã quét & chuẩn hóa chuyên sâu cho %d đề thi đã tổng hợp.", updated_count)
         return updated_count
 
     async def sync_pending_turso_documents(self) -> int:

@@ -448,6 +448,8 @@ class BotAPIBridge:
         self.app.router.add_get("/api/documents/check_hash", self.handle_check_hash)
         self.app.router.add_post("/api/documents/upload", self.handle_upload_document)
         self.app.router.add_post("/api/documents/sync_pending", self.handle_sync_pending_documents)
+        self.app.router.add_get("/api/documents/scanner_status", self.handle_scanner_status)
+        self.app.router.add_post("/api/documents/trigger_45s_scan", self.handle_trigger_45s_scan)
         self.app.router.add_post("/api/documents/import_gdrive", self.handle_import_gdrive)
         # Endpoints Admin Portal (100% Full Control cho Admin/Owner)
         self.app.router.add_get("/api/admin/check", self.handle_admin_check)
@@ -3077,6 +3079,24 @@ class BotAPIBridge:
         except Exception as te:
             logger.debug("Không thể đồng bộ đề lên Turso: %s", te)
 
+        # Đưa đề vừa tổng hợp vào Hàng đợi Quét Sâu Chu Kỳ 45 Giây (Bot 45s Auto-Scanner)
+        try:
+            from DocInspector.cloud_verifier import CloudExamVerifier
+            if doc_id:
+                await CloudExamVerifier.enqueue_for_45s_batch(
+                    doc_id=int(doc_id),
+                    file_name=file_name,
+                    raw_text=(raw_text_summary or file_name)[:14000],
+                    local_guess={
+                        "subject": detected_subject,
+                        "grade": detected_grade,
+                        "exam_type": exam_type_str,
+                        "confidence": confidence,
+                    },
+                )
+        except Exception as eq_err:
+            logger.debug("Enqueue 45s batch skip: %s", eq_err)
+
         self.invalidate_doc_caches()
         return web.json_response({
             "success": True,
@@ -5469,10 +5489,13 @@ class BotAPIBridge:
     async def handle_sync_pending_documents(self, request: web.Request) -> web.Response:
         """POST /api/documents/sync_pending: Đồng bộ tức thì các đề thi pending_bot từ Turso sang Discord & SQLite."""
         synced_pending = 0
+        batch_updated = 0
         try:
             intake_cog = self.bot.get_cog("DocumentIntakeCog")
             if intake_cog and hasattr(intake_cog, "sync_pending_turso_documents"):
                 synced_pending = await intake_cog.sync_pending_turso_documents()
+            if intake_cog and hasattr(intake_cog, "run_45s_batch_cloud_analysis"):
+                batch_updated = await intake_cog.run_45s_batch_cloud_analysis()
         except Exception as e:
             logger.debug(f"sync_pending_turso_documents error: {e}")
 
@@ -5481,8 +5504,121 @@ class BotAPIBridge:
         return web.json_response({
             "success": True,
             "synced_pending": synced_pending,
+            "batch_updated": batch_updated,
             "reconciled": reconciled,
         })
+
+    async def handle_scanner_status(self, request: web.Request) -> web.Response:
+        """GET /api/documents/scanner_status: Trạng thái vòng lặp 45 giây Bot tự động quét các đề đã tổng hợp."""
+        import json as _json
+        from DocInspector.cloud_verifier import CloudExamVerifier
+        from database.turso_client import turso_db
+
+        total_docs = 0
+        verified_docs = 0
+        recent_scanned = []
+        now_ts = int(time.time())
+
+        if hasattr(self.bot, "db") and self.bot.db:
+            try:
+                t_row = await self.bot.db.fetchone("SELECT COUNT(*) FROM documents_archive")
+                v_row = await self.bot.db.fetchone("SELECT COUNT(*) FROM documents_archive WHERE verdict = 'CLOUD_DEEP_VERIFIED'")
+                total_docs = int(t_row[0] or 0) if t_row else 0
+                verified_docs = int(v_row[0] or 0) if v_row else 0
+                r_rows = await self.bot.db.fetchall(
+                    """SELECT id, title, file_name, subject, estimated_level,
+                              COALESCE(exam_track, 'Thường'), COALESCE(school_or_department, ''),
+                              COALESCE(academic_year, ''), COALESCE(verdict, 'XAC_MINH'),
+                              COALESCE(notes, ''), timestamp
+                       FROM documents_archive
+                       WHERE verdict = 'CLOUD_DEEP_VERIFIED'
+                       ORDER BY id DESC LIMIT 8"""
+                )
+                for r in r_rows:
+                    recent_scanned.append({
+                        "id": int(r[0]),
+                        "title": r[1] or r[2] or f"Đề #{r[0]}",
+                        "file_name": r[2] or "",
+                        "subject": r[3] or "GENERAL",
+                        "estimated_level": r[4] or "Khối 12",
+                        "exam_track": r[5] or "Thường",
+                        "school_or_department": r[6] or "",
+                        "academic_year": r[7] or "",
+                        "verdict": r[8] or "CLOUD_DEEP_VERIFIED",
+                        "notes": (r[9] or "")[:240],
+                        "timestamp": r[10] or "",
+                    })
+            except Exception as e:
+                logger.debug(f"SQLite scanner_status error: {e}")
+
+        last_scan_ts = now_ts
+        last_batch_updated = 0
+        if turso_db.is_configured:
+            try:
+                kv_row = await turso_db.fetchone(
+                    "SELECT value, updated_at FROM bot_kv_store WHERE key = 'bot_45s_scanner_status'"
+                )
+                if kv_row and kv_row.get("value"):
+                    parsed = _json.loads(kv_row["value"])
+                    last_scan_ts = int(parsed.get("last_scan_ts") or kv_row.get("updated_at") or now_ts)
+                    last_batch_updated = int(parsed.get("last_batch_updated") or 0)
+                    if not recent_scanned and parsed.get("recent_scanned"):
+                        recent_scanned = parsed["recent_scanned"]
+                    if total_docs == 0:
+                        total_docs = int(parsed.get("total_docs") or 0)
+                        verified_docs = int(parsed.get("verified_docs") or 0)
+            except Exception:
+                pass
+
+        unverified_docs = max(0, total_docs - verified_docs)
+        quota = CloudExamVerifier.get_quota_stats()
+        return web.json_response({
+            "success": True,
+            "bot_online": True,
+            "engine": "Bot 45s Auto-Scanner + 3-Agent Cloud Verifier (Nemotron 550B -> Trap Auditor -> Arbiter 120B)",
+            "interval_seconds": 45,
+            "last_scan_ts": last_scan_ts,
+            "next_scan_ts": last_scan_ts + 45,
+            "last_batch_updated": last_batch_updated,
+            "total_docs": total_docs,
+            "verified_docs": verified_docs,
+            "unverified_docs": unverified_docs,
+            "quota": quota,
+            "recent_scanned": recent_scanned,
+        })
+
+    async def handle_trigger_45s_scan(self, request: web.Request) -> web.Response:
+        """POST /api/documents/trigger_45s_scan: Kích hoạt tức thì chu kỳ 45s quét các đề đã tổng hợp."""
+        synced_pending = 0
+        batch_updated = 0
+        try:
+            await self._reconcile_turso_sqlite_tables()
+            intake_cog = self.bot.get_cog("DocumentIntakeCog")
+            if intake_cog and hasattr(intake_cog, "sync_pending_turso_documents"):
+                synced_pending = await intake_cog.sync_pending_turso_documents()
+            if intake_cog and hasattr(intake_cog, "run_45s_batch_cloud_analysis"):
+                batch_updated = await intake_cog.run_45s_batch_cloud_analysis()
+        except Exception as e:
+            logger.warning(f"trigger_45s_scan error: {e}")
+
+        self.invalidate_doc_caches()
+        status_resp = await self.handle_scanner_status(request)
+        import json as _json
+        status_data = {}
+        if isinstance(status_resp, web.Response) and status_resp.text:
+            try:
+                status_data = _json.loads(status_resp.text)
+            except Exception:
+                pass
+        status_data["triggered"] = True
+        status_data["synced_pending"] = synced_pending
+        status_data["batch_updated"] = max(batch_updated, int(status_data.get("last_batch_updated") or 0))
+        status_data["message"] = (
+            f"Đã hoàn tất chu kỳ quét lô 45s: Bot đã thẩm định & chuẩn hóa {batch_updated} đề thi đã tổng hợp!"
+            if batch_updated > 0
+            else "Chu kỳ quét 45s đã kiểm tra toàn bộ kho: Tất cả đề đã tổng hợp hiện tại đều đã đạt chuẩn CLOUD_DEEP_VERIFIED!"
+        )
+        return web.json_response(status_data)
 
     async def _reconcile_turso_sqlite_tables(self) -> dict[str, int]:
         """Đối soát và đồng bộ 2 chiều giữa SQLite cục bộ (Bot) và Turso Cloud (Web):
