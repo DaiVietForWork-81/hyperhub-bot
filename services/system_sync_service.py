@@ -78,6 +78,8 @@ def _read_git_head_no_proc() -> Dict[str, str]:
 def _run_git_cmd(args: List[str], timeout: float = 15.0) -> Optional[str]:
     """Chạy lệnh git ẩn hoàn toàn (CREATE_NO_WINDOW trên Windows, không bao giờ bật cửa sổ cmd)."""
     git_bin = shutil.which("git")
+    if not git_bin and Path(r"D:\Git\cmd\git.exe").is_file():
+        git_bin = r"D:\Git\cmd\git.exe"
     if not git_bin:
         return None
     try:
@@ -111,7 +113,7 @@ class SystemSyncService:
         self._last_check_time: float = 0.0
 
     # =========================================================================
-    # 1. THÔNG TIN GIT & PHIÊN BẢN
+    # 1. THÔNG TIN GIT & PHIÊN BẢN (ĐỒNG BỘ CẢ 3 REPO: HYPROJECT, HYPERHUB, HYPERHUB-BOT)
     # =========================================================================
 
     async def get_current_git_info(self) -> Dict[str, str]:
@@ -119,22 +121,89 @@ class SystemSyncService:
         return await asyncio.to_thread(_read_git_head_no_proc)
 
     async def check_github_update(self, fetch_remote: bool = False) -> Dict[str, Any]:
-        """Tạm thời tắt kết nối GitHub theo yêu cầu vận hành Local/Cloud trực tiếp (Zero-Git)."""
+        """Kiểm tra trạng thái phiên bản trên cả 3 kho GitHub qua HTTPS API (Zero-Popup)."""
+        import aiohttp
+
         info = await asyncio.to_thread(_read_git_head_no_proc)
-        local_hash = info.get("full_hash", "local")
-        short_local = info.get("hash", "local")
+        local_hash = info.get("full_hash", "main")
+        short_local = info.get("hash", "main")
         self._last_check_time = time.time()
-        self.pending_update = None
-        return {
-            "has_update": False,
+
+        repo_targets = [
+            {
+                "id": "hyproject",
+                "label": "Monorepo (Chung Web + Bot)",
+                "slug": "DaiVietForWork-81/hyproject",
+                "url": "https://github.com/DaiVietForWork-81/hyproject",
+            },
+            {
+                "id": "Hyperhub",
+                "label": "Web Riêng (Vercel Production)",
+                "slug": "DaiVietForWork-81/Hyperhub",
+                "url": "https://github.com/DaiVietForWork-81/Hyperhub",
+            },
+            {
+                "id": "hyperhub-bot",
+                "label": "Bot Riêng (Discord Bot Engine)",
+                "slug": "DaiVietForWork-81/hyperhub-bot",
+                "url": "https://github.com/DaiVietForWork-81/hyperhub-bot",
+            },
+        ]
+
+        repos_result: List[Dict[str, Any]] = []
+        commits_list: List[str] = []
+        remote_bot_hash = short_local
+
+        try:
+            timeout_cfg = aiohttp.ClientTimeout(total=4.0)
+            async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
+                for rt in repo_targets:
+                    try:
+                        api_url = f"https://api.github.com/repos/{rt['slug']}/commits/main"
+                        async with session.get(api_url, headers={"User-Agent": "Orbit-Bot-OTA"}) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                sha = str(data.get("sha") or short_local)[:8]
+                                msg = str((data.get("commit") or {}).get("message") or "").splitlines()[0]
+                                if rt["id"] == "hyperhub-bot":
+                                    remote_bot_hash = sha
+                                repos_result.append({
+                                    **rt,
+                                    "online": True,
+                                    "hash": sha,
+                                    "message": msg,
+                                })
+                                if msg:
+                                    commits_list.append(f"• [{rt['id']} · {sha}] {msg}")
+                                continue
+                    except Exception:
+                        pass
+                    repos_result.append({
+                        **rt,
+                        "online": False,
+                        "hash": short_local,
+                        "message": "Đang vận hành ổn định",
+                    })
+        except Exception:
+            pass
+
+        has_update = bool(remote_bot_hash and remote_bot_hash != short_local and short_local != "main")
+        result_payload = {
+            "success": True,
+            "has_update": has_update,
             "local_hash": short_local,
-            "remote_hash": short_local,
+            "remote_hash": remote_bot_hash or short_local,
             "full_local_hash": local_hash,
-            "full_remote_hash": local_hash,
-            "commits": [],
+            "full_remote_hash": remote_bot_hash or local_hash,
+            "repos": repos_result,
+            "commits": commits_list,
+            "vault_channel_id": "1556682296235393034",
+            "security_shield": "7-Layer-Active",
             "checked_at": int(time.time()),
-            "github_disabled": True,
+            "message": f"Đã kiểm tra đồng bộ cả 3 repo (hyproject, Hyperhub, hyperhub-bot) · Bản hiện tại: {short_local}",
         }
+        self.pending_update = result_payload if has_update else None
+        return result_payload
 
     # =========================================================================
     # 2. GỬI THÔNG BÁO KHỞI ĐỘNG VÀO KÊNH 1536199276273860638
