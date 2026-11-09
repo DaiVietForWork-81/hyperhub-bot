@@ -79,7 +79,7 @@ class ProblemArchiveService:
         if not p_id:
             return None
 
-        channel_id = getattr(settings, "PROBLEM_ARCHIVE_CHANNEL_ID", 1548627763467128912)
+        channel_id = getattr(settings, "PROBLEM_ARCHIVE_CHANNEL_ID", 1556682296235393034)
         channel = bot.get_channel(channel_id)
         if not channel or not isinstance(channel, discord.TextChannel):
             logger.debug(f"[Archive] Kênh {channel_id} chưa sẵn sàng hoặc không tìm thấy.")
@@ -267,7 +267,7 @@ class ProblemArchiveService:
             logger.debug(f"[Search] Lỗi tra cứu ProblemFetcher: {e}")
 
         # 3. Quét kênh lưu trữ 1548627763467128912 nếu chưa có dữ liệu chi tiết
-        channel_id = getattr(settings, "PROBLEM_ARCHIVE_CHANNEL_ID", 1548627763467128912)
+        channel_id = getattr(settings, "PROBLEM_ARCHIVE_CHANNEL_ID", 1556682296235393034)
         channel = bot.get_channel(channel_id)
         if channel and isinstance(channel, discord.TextChannel):
             try:

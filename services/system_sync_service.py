@@ -33,10 +33,50 @@ DEFAULT_SYNC_CHANNEL_ID = 1536199276273860638
 GITHUB_REPO_URL = "https://github.com/DaiVietForWork-81/hyperhub-bot.git"
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_SUBPROCESS_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if sys.platform == "win32" else 0
+
+
+def _read_git_head_no_proc() -> Dict[str, str]:
+    """Đọc trực tiếp thông tin Git từ thư mục .git mà KHÔNG gọi tiến trình git.exe (Zero-Popup)."""
+    dot_git = PROJECT_ROOT / ".git"
+    branch = "main"
+    full_hash = ""
+    commit_msg = "Orbit Runtime Ready"
+    try:
+        head_file = dot_git / "HEAD"
+        if head_file.is_file():
+            head_raw = head_file.read_text(encoding="utf-8", errors="ignore").strip()
+            if head_raw.startswith("ref:"):
+                ref_rel = head_raw.split(":", 1)[1].strip()
+                branch = ref_rel.split("/")[-1]
+                ref_file = dot_git / ref_rel
+                if ref_file.is_file():
+                    full_hash = ref_file.read_text(encoding="utf-8", errors="ignore").strip()
+            else:
+                full_hash = head_raw
+        logs_head = dot_git / "logs" / "HEAD"
+        if logs_head.is_file():
+            lines = [ln.strip() for ln in logs_head.read_text(encoding="utf-8", errors="ignore").splitlines() if ln.strip()]
+            if lines:
+                last_line = lines[-1]
+                if "\t" in last_line:
+                    commit_msg = last_line.split("\t", 1)[1].strip()
+                parts = last_line.split()
+                if len(parts) >= 2 and not full_hash:
+                    full_hash = parts[1]
+    except Exception:
+        pass
+    short_hash = full_hash[:8] if full_hash else "main"
+    return {
+        "hash": short_hash,
+        "full_hash": full_hash or "main",
+        "commit_msg": commit_msg,
+        "branch": branch,
+    }
 
 
 def _run_git_cmd(args: List[str], timeout: float = 15.0) -> Optional[str]:
-    """Chạy lệnh git an toàn trong thư mục gốc của bot."""
+    """Chạy lệnh git ẩn hoàn toàn (CREATE_NO_WINDOW trên Windows, không bao giờ bật cửa sổ cmd)."""
     git_bin = shutil.which("git")
     if not git_bin:
         return None
@@ -46,8 +86,10 @@ def _run_git_cmd(args: List[str], timeout: float = 15.0) -> Optional[str]:
             cwd=PROJECT_ROOT,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
             text=True,
             timeout=timeout,
+            creationflags=_SUBPROCESS_FLAGS,
         )
         if res.returncode == 0:
             return res.stdout.strip()
@@ -73,73 +115,26 @@ class SystemSyncService:
     # =========================================================================
 
     async def get_current_git_info(self) -> Dict[str, str]:
-        """Lấy thông tin phiên bản git hiện tại của bot."""
-        def _get():
-            short_hash = _run_git_cmd(["rev-parse", "--short", "HEAD"]) or "dev"
-            full_hash = _run_git_cmd(["rev-parse", "HEAD"]) or "dev"
-            commit_msg = _run_git_cmd(["log", "-1", "--pretty=format:%s (%cr)"]) or "Chưa rõ commit"
-            branch = _run_git_cmd(["rev-parse", "--abbrev-ref", "HEAD"]) or "main"
-            return {
-                "hash": short_hash,
-                "full_hash": full_hash,
-                "commit_msg": commit_msg,
-                "branch": branch,
-            }
-        return await asyncio.to_thread(_get)
+        """Lấy thông tin phiên bản git hiện tại của bot (đọc trực tiếp .git, không mở cmd/git)."""
+        return await asyncio.to_thread(_read_git_head_no_proc)
 
-    async def check_github_update(self) -> Dict[str, Any]:
-        """Kiểm tra xem trên GitHub repo có commit mới hay không."""
-        def _check():
-            git_bin = shutil.which("git")
-            if not git_bin:
-                return {
-                    "has_update": False,
-                    "error": "Git không được cài đặt trên hệ thống máy chủ",
-                    "local_hash": "unknown",
-                    "remote_hash": "unknown",
-                    "commits": [],
-                }
-
-            # Fetch origin main (timeout ngắn 5s để không treo khi GitHub bị 504 Gateway Timeout)
-            _run_git_cmd(["fetch", "origin", "main", "--quiet"], timeout=5.0)
-
-            local_hash = _run_git_cmd(["rev-parse", "HEAD"]) or ""
-            remote_hash = _run_git_cmd(["rev-parse", "origin/main"]) or local_hash
-            short_local = local_hash[:8] if local_hash else "unknown"
-            short_remote = remote_hash[:8] if remote_hash else "unknown"
-
-            behind_raw = _run_git_cmd(["rev-list", "--count", "HEAD..origin/main"]) or "0"
-            ahead_raw = _run_git_cmd(["rev-list", "--count", "origin/main..HEAD"]) or "0"
-            behind_count = int(behind_raw) if behind_raw.isdigit() else 0
-            ahead_count = int(ahead_raw) if ahead_raw.isdigit() else 0
-
-            has_update = bool(behind_count > 0 and ahead_count == 0)
-            commits: List[str] = []
-
-            if has_update:
-                raw_commits = _run_git_cmd(
-                    ["log", "-n", "5", "--pretty=format:• [%h] %s (%cr)", f"{local_hash}..origin/main"]
-                )
-                if raw_commits:
-                    commits = [c.strip() for c in raw_commits.split("\n") if c.strip()]
-
-            return {
-                "has_update": has_update,
-                "local_hash": short_local,
-                "remote_hash": short_remote,
-                "full_local_hash": local_hash,
-                "full_remote_hash": remote_hash,
-                "commits": commits,
-                "checked_at": int(time.time()),
-            }
-
-        result = await asyncio.to_thread(_check)
+    async def check_github_update(self, fetch_remote: bool = False) -> Dict[str, Any]:
+        """Tạm thời tắt kết nối GitHub theo yêu cầu vận hành Local/Cloud trực tiếp (Zero-Git)."""
+        info = await asyncio.to_thread(_read_git_head_no_proc)
+        local_hash = info.get("full_hash", "local")
+        short_local = info.get("hash", "local")
         self._last_check_time = time.time()
-        if result.get("has_update"):
-            self.pending_update = result
-        else:
-            self.pending_update = None
-        return result
+        self.pending_update = None
+        return {
+            "has_update": False,
+            "local_hash": short_local,
+            "remote_hash": short_local,
+            "full_local_hash": local_hash,
+            "full_remote_hash": local_hash,
+            "commits": [],
+            "checked_at": int(time.time()),
+            "github_disabled": True,
+        }
 
     # =========================================================================
     # 2. GỬI THÔNG BÁO KHỞI ĐỘNG VÀO KÊNH 1536199276273860638
@@ -235,10 +230,13 @@ class SystemSyncService:
     # =========================================================================
 
     async def start_periodic_update_checker(self, bot: commands.Bot, interval_seconds: int = 300) -> None:
-        """Vòng lặp kiểm tra cập nhật GitHub mỗi 5 phút trong nền (Zero CPU overhead)."""
+        """Vòng lặp kiểm tra cập nhật GitHub trong nền (mặc định tắt gọi git.exe tự động để tránh bật cửa sổ cmd)."""
         if self._checker_started:
             return
         self._checker_started = True
+
+        if os.environ.get("ORBIT_ENABLE_GIT_POLL") != "1":
+            return
 
         await bot.wait_until_ready()
         logger.info("🔄 Khởi chạy vòng lặp giám sát cập nhật GitHub tự động (mỗi %ds)...", interval_seconds)
@@ -246,7 +244,7 @@ class SystemSyncService:
         while not bot.is_closed():
             try:
                 await asyncio.sleep(interval_seconds)
-                update_res = await self.check_github_update()
+                update_res = await self.check_github_update(fetch_remote=True)
                 if update_res.get("has_update"):
                     remote_hash = update_res.get("remote_hash", "")
                     if remote_hash and remote_hash != self._last_notified_remote_hash:
@@ -477,39 +475,11 @@ class SystemSyncService:
     # =========================================================================
 
     async def perform_system_update(self, bot: commands.Bot) -> Dict[str, Any]:
-        """Kéo mã nguồn mới nhất từ GitHub, biên dịch (nếu cần), và thực thi hot-reload."""
+        """Thực thi hot-reload toàn diện trực tiếp từ mã nguồn Local (tạm thời không gọi GitHub/Git)."""
         async with self._update_lock:
             start_t = time.perf_counter()
-            logger.info("🚀 [1-Click Update] Bắt đầu quy trình cập nhật từ GitHub...")
-
-            def _pull_git():
-                git_bin = shutil.which("git")
-                if not git_bin:
-                    return False, "Không tìm thấy Git trên máy chủ"
-                try:
-                    # 1. Fetch (không fail nếu GitHub 504 tạm thời)
-                    subprocess.run([git_bin, "fetch", "origin", "main"], cwd=PROJECT_ROOT, timeout=8)
-                    behind_raw = _run_git_cmd(["rev-list", "--count", "HEAD..origin/main"]) or "0"
-                    ahead_raw = _run_git_cmd(["rev-list", "--count", "origin/main..HEAD"]) or "0"
-                    behind_count = int(behind_raw) if behind_raw.isdigit() else 0
-                    ahead_count = int(ahead_raw) if ahead_raw.isdigit() else 0
-                    # 2. Chỉ fast-forward khi remote thực sự có commit mới và không ghi đè commit local
-                    if behind_count > 0 and ahead_count == 0:
-                        subprocess.run([git_bin, "merge", "--ff-only", "origin/main"], cwd=PROJECT_ROOT, timeout=10)
-                    new_hash = _run_git_cmd(["rev-parse", "--short", "HEAD"]) or "mới"
-                    return True, new_hash
-                except Exception:
-                    new_hash = _run_git_cmd(["rev-parse", "--short", "HEAD"]) or "local"
-                    return True, new_hash
-
-            pull_ok, new_hash_or_err = await asyncio.to_thread(_pull_git)
-            if not pull_ok:
-                logger.error("Cập nhật GitHub thất bại: %s", new_hash_or_err)
-                return {
-                    "success": False,
-                    "error": f"Lỗi kéo mã nguồn từ GitHub: {new_hash_or_err}",
-                    "new_hash": None,
-                }
+            logger.info("🚀 [Local Hot-Reload] Bắt đầu nạp lại hệ thống trực tiếp (Zero-GitHub)...")
+            new_hash_or_err = (await asyncio.to_thread(_read_git_head_no_proc)).get("hash", "local")
 
             # Kiểm tra và biên dịch lại C++ nếu có compiler
             try:

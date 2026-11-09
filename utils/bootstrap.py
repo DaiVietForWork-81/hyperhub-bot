@@ -32,6 +32,7 @@ ENV_EXAMPLE_FILE = os.path.join(PROJECT_DIR, ".env.example")
 CPP_CORE_DIR = os.path.join(PROJECT_DIR, "cpp_core")
 BUNDLED_CPP_BIN = os.path.join(PROJECT_DIR, "cpp_core", "compiler", "w64devkit", "bin")
 BUNDLED_NODE_BIN = os.path.join(PROJECT_DIR, "bin", "node")
+_SUBPROCESS_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if sys.platform == "win32" else 0
 
 
 def setup_bundled_toolchains() -> None:
@@ -139,7 +140,7 @@ def check_and_build_cpp_engine() -> None:
 
 def check_nodejs_environment() -> None:
     """
-    Kiểm tra Node.js trên hệ thống (phục vụ chạy JavaScript/TypeScript Sandbox).
+    Kiểm tra Node.js trên hệ thống (phục vụ chạy JavaScript/TypeScript Sandbox) mà không bật cửa sổ cmd.
     """
     node_path = shutil.which("node")
     if node_path:
@@ -149,6 +150,7 @@ def check_nodejs_environment() -> None:
                 capture_output=True,
                 text=True,
                 timeout=5,
+                creationflags=_SUBPROCESS_FLAGS,
             )
             version = res.stdout.strip() if res.returncode == 0 else ""
             print(f"[+] Phát hiện Node.js ({version}): Sẵn sàng hỗ trợ Sandbox JavaScript/TypeScript.")
@@ -183,13 +185,12 @@ ORBIT_BOT_REPO_URL = "https://github.com/DaiVietForWork-81/hyperhub-bot.git"
 
 def check_and_apply_git_updates() -> bool:
     """
-    Tự động kiểm tra bản cập nhật mới từ repository GitHub (https://github.com/DaiVietForWork-81/hyperhub-bot).
-    Nếu phát hiện commit mới trên nhánh main:
-    1. Tải và đồng bộ toàn bộ mã nguồn mới nhất (git reset --hard origin/main).
-    2. Dọn sạch các file thay đổi/bị xóa để khớp 100% với repo GitHub.
-    3. Bảo toàn an toàn 100% các file dữ liệu cục bộ (.env, data/, bot.db, logs/, backups/).
-    4. Tự động khởi động lại bot để nạp mã nguồn mới.
+    Kiểm tra bản cập nhật mới từ repository GitHub (chỉ chạy khi ORBIT_AUTO_GIT_UPDATE=1,
+    luôn dùng CREATE_NO_WINDOW để không bao giờ bật cửa sổ cmd/git).
     """
+    if os.environ.get("ORBIT_AUTO_GIT_UPDATE") != "1":
+        return False
+
     if os.environ.get("HYPERHUB_UPDATED_RESTARTED") == "1":
         os.environ.pop("HYPERHUB_UPDATED_RESTARTED", None)
         return False
@@ -208,11 +209,12 @@ def check_and_apply_git_updates() -> bool:
             cwd=PROJECT_DIR,
             text=True,
             stderr=subprocess.DEVNULL,
+            creationflags=_SUBPROCESS_FLAGS,
         )
         if "origin" not in remotes_out:
-            subprocess.run([git_bin, "remote", "add", "origin", ORBIT_BOT_REPO_URL], cwd=PROJECT_DIR, check=True)
+            subprocess.run([git_bin, "remote", "add", "origin", ORBIT_BOT_REPO_URL], cwd=PROJECT_DIR, check=True, creationflags=_SUBPROCESS_FLAGS)
         elif "hyperhub-bot" not in remotes_out:
-            subprocess.run([git_bin, "remote", "set-url", "origin", ORBIT_BOT_REPO_URL], cwd=PROJECT_DIR, check=True)
+            subprocess.run([git_bin, "remote", "set-url", "origin", ORBIT_BOT_REPO_URL], cwd=PROJECT_DIR, check=True, creationflags=_SUBPROCESS_FLAGS)
 
         print("[*] Đang kiểm tra cập nhật từ GitHub (Orbit Bot)...", flush=True)
         fetch_res = subprocess.run(
@@ -222,16 +224,17 @@ def check_and_apply_git_updates() -> bool:
             stderr=subprocess.PIPE,
             text=True,
             timeout=12,
+            creationflags=_SUBPROCESS_FLAGS,
         )
         if fetch_res.returncode != 0:
             print("[!] Không thể fetch từ GitHub (offline hoặc chưa có kết nối). Tiếp tục khởi động...", flush=True)
             return False
 
         local_hash = subprocess.check_output(
-            [git_bin, "rev-parse", "HEAD"], cwd=PROJECT_DIR, text=True, stderr=subprocess.DEVNULL
+            [git_bin, "rev-parse", "HEAD"], cwd=PROJECT_DIR, text=True, stderr=subprocess.DEVNULL, creationflags=_SUBPROCESS_FLAGS
         ).strip()
         remote_hash = subprocess.check_output(
-            [git_bin, "rev-parse", "origin/main"], cwd=PROJECT_DIR, text=True, stderr=subprocess.DEVNULL
+            [git_bin, "rev-parse", "origin/main"], cwd=PROJECT_DIR, text=True, stderr=subprocess.DEVNULL, creationflags=_SUBPROCESS_FLAGS
         ).strip()
 
         ahead_count = int(
@@ -240,6 +243,7 @@ def check_and_apply_git_updates() -> bool:
                 cwd=PROJECT_DIR,
                 text=True,
                 stderr=subprocess.DEVNULL,
+                creationflags=_SUBPROCESS_FLAGS,
             ).strip()
             or "0"
         )
@@ -249,6 +253,7 @@ def check_and_apply_git_updates() -> bool:
                 cwd=PROJECT_DIR,
                 text=True,
                 stderr=subprocess.DEVNULL,
+                creationflags=_SUBPROCESS_FLAGS,
             ).strip()
             or "0"
         )
@@ -261,13 +266,13 @@ def check_and_apply_git_updates() -> bool:
             print("=" * 70, flush=True)
             print("[*] Đang tự động kéo bản cập nhật và đồng bộ 100%...", flush=True)
 
-            subprocess.run([git_bin, "merge", "--ff-only", "origin/main"], cwd=PROJECT_DIR, check=False)
+            subprocess.run([git_bin, "merge", "--ff-only", "origin/main"], cwd=PROJECT_DIR, check=False, creationflags=_SUBPROCESS_FLAGS)
             print("[+] Đã đồng bộ mã nguồn mới nhất thành công! Đang khởi động lại Bot...", flush=True)
 
             new_env = os.environ.copy()
             new_env["HYPERHUB_UPDATED_RESTARTED"] = "1"
             restart_cmd = [sys.executable, "bot.py"] if (not sys.argv or sys.argv[0] == "-c") else [sys.executable] + sys.argv
-            subprocess.Popen(restart_cmd, cwd=PROJECT_DIR, env=new_env)
+            subprocess.Popen(restart_cmd, cwd=PROJECT_DIR, env=new_env, creationflags=_SUBPROCESS_FLAGS)
             sys.exit(0)
         else:
             print(f"[+] Bot đã ở phiên bản mới nhất từ GitHub ({local_hash[:8] if local_hash else 'main'}).", flush=True)

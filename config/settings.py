@@ -76,7 +76,7 @@ if HAS_PYDANTIC:
             description="Kênh thông báo đồng bộ hệ thống, khởi động và cập nhật GitHub",
         )
         PROBLEM_ARCHIVE_CHANNEL_ID: int = Field(
-            default=1548627763467128912,
+            default=1556682296235393034,
             description="Kênh lưu trữ đề bài, lời giải và code mẫu tự động sau mỗi bài Freedom/Ranked",
         )
         # ==================== HYPER GENERATOR & EXAM PLATFORM ====================
@@ -93,7 +93,7 @@ if HAS_PYDANTIC:
             description="Kênh #🔐・verify trong thư mục 1534145110642524250 để lấy mã xác minh đăng nhập Web (hiệu lực 5 phút)",
         )
         DATABASE_ARCHIVE_CHANNEL_ID: int = Field(
-            default=1548627763467128912,
+            default=1556682296235393034,
             description="Kênh #database (Kho lưu trữ đề thi, lời giải và tài liệu)",
         )
         CHUNK_ARCHIVE_CHANNEL_ID: int = Field(
@@ -540,8 +540,8 @@ else:
                 or "1536199276273860638"
             )
             self.PROBLEM_ARCHIVE_CHANNEL_ID = int(
-                os.environ.get("PROBLEM_ARCHIVE_CHANNEL_ID", "1548627763467128912")
-                or "1548627763467128912"
+                os.environ.get("PROBLEM_ARCHIVE_CHANNEL_ID", "1556682296235393034")
+                or "1556682296235393034"
             )
             # Hyper Generator Channels & Roles
             self.GENERATE_CHANNEL_ID = int(
@@ -554,10 +554,10 @@ else:
                 os.environ.get("WEB_VERIFY_CHANNEL_ID", "1568268605085454416") or "1568268605085454416"
             )
             self.DATABASE_ARCHIVE_CHANNEL_ID = int(
-                os.environ.get("DATABASE_ARCHIVE_CHANNEL_ID", "1548627763467128912") or "1548627763467128912"
+                os.environ.get("DATABASE_ARCHIVE_CHANNEL_ID", "1556682296235393034") or "1556682296235393034"
             )
             self.CHUNK_ARCHIVE_CHANNEL_ID = int(
-                os.environ.get("CHUNK_ARCHIVE_CHANNEL_ID", "0") or "0"
+                os.environ.get("CHUNK_ARCHIVE_CHANNEL_ID", "1556682296235393034") or "1556682296235393034"
             )
             self.ARCHIVE_CHUNK_MB = int(
                 os.environ.get("ARCHIVE_CHUNK_MB", "25") or "25"

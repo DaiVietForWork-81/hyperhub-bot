@@ -49,7 +49,7 @@ from utils.logger import get_logger
 logger = get_logger("ExamGeneratorCog")
 
 GENERATE_CHANNEL_ID = getattr(settings, "GENERATE_CHANNEL_ID", 1550896415046377615)
-DATABASE_ARCHIVE_CHANNEL_ID = getattr(settings, "DATABASE_ARCHIVE_CHANNEL_ID", 1548627763467128912)
+DATABASE_ARCHIVE_CHANNEL_ID = getattr(settings, "DATABASE_ARCHIVE_CHANNEL_ID", 1556682296235393034)
 
 # Thư mục lưu trữ tạm thời các file đề thi
 EXAM_EXPORTS_DIR = os.path.join("data", "generated_exams")

@@ -680,7 +680,7 @@ class DocumentIntakeCog(commands.Cog):
         self, guild: discord.Guild, category_id: int, channel_slug: str, icon: str, subject_name: str
     ) -> discord.TextChannel | None:
         """Lưu trữ tài liệu vào kênh lưu trữ chuyên biệt (#database), không tự sinh kênh môn học rác trong Category Tài Liệu."""
-        db_archive_id = getattr(settings, "DATABASE_ARCHIVE_CHANNEL_ID", 1548627763467128912)
+        db_archive_id = getattr(settings, "DATABASE_ARCHIVE_CHANNEL_ID", 1556682296235393034)
         archive_ch = guild.get_channel(db_archive_id)
         if archive_ch and isinstance(archive_ch, discord.TextChannel):
             return archive_ch

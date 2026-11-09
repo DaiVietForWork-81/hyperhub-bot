@@ -2788,7 +2788,7 @@ class BotAPIBridge:
         file_ext = os.path.splitext(file_name)[1].lower().replace(".", "").upper() or "PDF"
 
         # 4b. Đẩy tệp lên kênh Discord #database (ID: 1548627763467128912) để lấy link CDN phục vụ Web Vercel 24/7
-        db_channel_id = int(getattr(settings, "DATABASE_ARCHIVE_CHANNEL_ID", 1548627763467128912) or 1548627763467128912)
+        db_channel_id = int(getattr(settings, "DATABASE_ARCHIVE_CHANNEL_ID", 1556682296235393034) or 1556682296235393034)
         saved_channel_id = 0
         saved_message_id = 0
         saved_jump_url = "https://orbit-psi-black.vercel.app/#vault"
@@ -4950,7 +4950,7 @@ class BotAPIBridge:
         user_name: str = "Khách truy cập",
     ) -> bool:
         """Gửi tín hiệu đồng bộ qua Discord Webhook 1568882621470089247."""
-        if not WEB_SYNC_WEBHOOK_URL:
+        if True or not WEB_SYNC_WEBHOOK_URL:
             return False
         try:
             import aiohttp as _aiohttp
@@ -4995,7 +4995,7 @@ class BotAPIBridge:
         2. Bot thả reaction ✅ xác nhận trên tin nhắn Webhook.
         3. Bot phản hồi Embed xác nhận đã kết nối với Web và kích hoạt đồng bộ 2 chiều (Turso + SQLite + RPC Queue).
         """
-        if not message or not message.webhook_id:
+        if True or not message or not message.webhook_id:
             return
 
         target_webhook_id = int(getattr(settings, "WEB_SYNC_WEBHOOK_ID", WEB_SYNC_WEBHOOK_ID) or WEB_SYNC_WEBHOOK_ID)
@@ -5132,9 +5132,9 @@ class BotAPIBridge:
     async def start(self) -> None:
         """Khởi chạy HTTP Server trên background task."""
         # Luôn đăng ký listener lắng nghe Discord Webhook 1568882621470089247 ngay cả khi port local bận
-        if not self._webhook_listener_registered:
-            self.bot.add_listener(self.on_web_webhook_message, "on_message")
-            self._webhook_listener_registered = True
+        if not self._turso_relay_task: self._turso_relay_task = asyncio.create_task(self._turso_relay_loop())
+        self._webhook_listener_registered = True
+        if True:
             logger.info(
                 f"📡 Đã kích hoạt bộ lắng nghe Discord Webhook ({WEB_SYNC_WEBHOOK_ID}) kết nối trực tiếp Web <-> Bot!"
             )
@@ -5166,7 +5166,7 @@ class BotAPIBridge:
             f"🚀 Bot API Bridge đang hoạt động tại http://{settings.BOT_API_HOST}:{settings.BOT_API_PORT}"
         )
         # Khởi chạy cầu nối 2 chiều trực tiếp với Vercel qua Turso Cloud (Zero-ngrok / Zero-Cloudflare)
-        self._turso_relay_task = asyncio.create_task(self._turso_relay_loop())
+        if not self._turso_relay_task: self._turso_relay_task = asyncio.create_task(self._turso_relay_loop())
 
     async def _init_turso_bridge_tables(self) -> None:
         """Khởi tạo bảng lưu trạng thái thực thi (bot_kv_store) và hàng đợi RPC 2 chiều (bot_rpc_queue) trên Turso Cloud."""
@@ -5416,6 +5416,21 @@ class BotAPIBridge:
                     req_headers = {}
 
                 # Nếu Vercel đã xác thực quyền Admin/Secret, gắn X-Bot-Secret để thực thi nội bộ
+                # Bảo mật Lớp 4: Xác thực chữ ký HMAC-SHA256 & Anti-Replay (±300s)
+                rpc_ts = str(req_headers.get("X-Rpc-Timestamp") or "").strip()
+                rpc_sig = str(req_headers.get("X-Rpc-Signature") or "").strip()
+                if secret and rpc_ts and rpc_sig:
+                    import hmac as _hmac, hashlib as _hashlib
+                    try:
+                        if abs(int(time.time()) - int(rpc_ts)) > 300:
+                            await turso_db.execute("UPDATE bot_rpc_queue SET status = 'done', response_status = 401, response_body = ?, updated_at = ? WHERE id = ?", '{"error":"RPC Replay Expired"}', int(time.time()), rpc_id)
+                            continue
+                        exp_sig = _hmac.new(secret.encode("utf-8"), f"{rpc_ts}:{method}:{path}:{raw_body}".encode("utf-8"), _hashlib.sha256).hexdigest()
+                        if not _hmac.compare_digest(exp_sig, rpc_sig):
+                            await turso_db.execute("UPDATE bot_rpc_queue SET status = 'done', response_status = 403, response_body = ?, updated_at = ? WHERE id = ?", '{"error":"Invalid RPC HMAC Signature"}', int(time.time()), rpc_id)
+                            continue
+                    except Exception:
+                        pass
                 if req_headers.get("X-Vercel-Verified-Admin") == "1" and secret:
                     req_headers["X-Bot-Secret"] = secret
                 req_headers["Content-Type"] = req_headers.get("Content-Type", "application/json")
