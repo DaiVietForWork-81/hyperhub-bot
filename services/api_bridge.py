@@ -3086,7 +3086,7 @@ class BotAPIBridge:
                 await CloudExamVerifier.enqueue_for_45s_batch(
                     doc_id=int(doc_id),
                     file_name=file_name,
-                    raw_text=(raw_text_summary or file_name)[:14000],
+                    raw_text=(raw_text_summary or file_name)[:16384],
                     local_guess={
                         "subject": detected_subject,
                         "grade": detected_grade,
@@ -5575,7 +5575,7 @@ class BotAPIBridge:
         return web.json_response({
             "success": True,
             "bot_online": True,
-            "engine": "Bot 45s Auto-Scanner + 3-Agent Cloud Verifier (Nemotron 550B -> Trap Auditor -> Arbiter 120B)",
+            "engine": "Bot 45s Auto-Scanner • nvidia/nemotron-3-ultra-550b-a55b (16K Context / Đề)",
             "interval_seconds": 45,
             "last_scan_ts": last_scan_ts,
             "next_scan_ts": last_scan_ts + 45,

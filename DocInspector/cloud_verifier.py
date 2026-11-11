@@ -42,6 +42,25 @@ MAX_REQUESTS_PER_MINUTE = 34
 MAX_REQUESTS_PER_DAY = 9500
 MIN_INTERVAL_SECONDS = 1.6
 BATCH_FLUSH_INTERVAL_SECONDS = 45.0
+PRIMARY_MODEL_550B = "nvidia/nemotron-3-ultra-550b-a55b"
+PER_EXAM_CONTEXT_CHARS = 16384
+
+
+def _slice_16k_exam_context(raw_text: str, file_name: str = "") -> str:
+    """Trích xuất chuẩn 16K context (16.384 ký tự: 8K Đầu + 4K Giữa + 4K Cuối) cho mỗi đề thi."""
+    clean = (raw_text or "").strip()
+    if not clean:
+        return f"(Tài liệu: {file_name})"
+    if len(clean) <= PER_EXAM_CONTEXT_CHARS:
+        return clean
+    mid = len(clean) // 2
+    return (
+        clean[:8192]
+        + "\n...[PHẦN GIỮA ĐỀ]...\n"
+        + clean[mid - 2048 : mid + 2048]
+        + "\n...[PHẦN CUỐI ĐỀ & ĐÁP ÁN]...\n"
+        + clean[-4096:]
+    )
 
 _MINUTE_WINDOW: deque[float] = deque()
 _DAY_WINDOW: deque[float] = deque()
@@ -293,9 +312,9 @@ Hãy đọc lại văn bản đề, kết quả phân tích của Agent 1, và k
 def _build_model_chain(primary_model: str, fallback_model: str) -> List[str]:
     chain: List[str] = []
     for m in (
+        "nvidia/nemotron-3-ultra-550b-a55b",
         primary_model,
         fallback_model,
-        "nvidia/nemotron-3-ultra-550b-a55b",
         "nvidia/nemotron-3.5-super-vl-120b-a12b",
         "google/gemma-4-31b-it",
         "z-ai/glm-5.3-flash",
@@ -694,6 +713,8 @@ class CloudExamVerifier:
                 "rpd_limit": MAX_REQUESTS_PER_DAY,
                 "cache_size": len(_VERIFICATION_CACHE),
                 "pending_45s_queue": len(_PENDING_45S_QUEUE),
+                "primary_model": PRIMARY_MODEL_550B,
+                "context_per_exam": PER_EXAM_CONTEXT_CHARS,
             }
 
     @classmethod
@@ -836,17 +857,7 @@ class CloudExamVerifier:
             cls.enqueue_for_45s_batch(doc_id=fp, file_name=file_name, raw_text=clean_text)
             return None
 
-        if len(clean_text) > 36000:
-            mid = len(clean_text) // 2
-            snippet = (
-                clean_text[:18000]
-                + "\n...[PHẦN GIỮA ĐỀ]...\n"
-                + clean_text[mid - 5000 : mid + 5000]
-                + "\n...[PHẦN CUỐI ĐỀ & ĐÁP ÁN]...\n"
-                + clean_text[-8000:]
-            )
-        else:
-            snippet = clean_text or f"(Tệp quét ảnh / dữ liệu bảng: {file_name})"
+        snippet = _slice_16k_exam_context(clean_text, file_name)
 
         user_prompt = (
             f"Tên tệp: {file_name}\n"
@@ -970,17 +981,7 @@ class CloudExamVerifier:
             for local_i, orig_idx in enumerate(chunk_indices):
                 fn = items[orig_idx].get("file_name", "")
                 rt = (items[orig_idx].get("raw_text", "") or "").strip()
-                if len(rt) > 6000:
-                    mid = len(rt) // 2
-                    snippet = (
-                        rt[:3000]
-                        + "\n...\n"
-                        + rt[mid - 1000 : mid + 1000]
-                        + "\n...\n"
-                        + rt[-1500:]
-                    )
-                else:
-                    snippet = rt or f"(Tài liệu: {fn})"
+                snippet = _slice_16k_exam_context(rt, fn)
                 blocks.append(f"--- ĐỀ SỐ {local_i} ---\nTên tệp: {fn}\nNội dung:\n{snippet}")
 
             batch_prompt = (
