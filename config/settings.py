@@ -388,8 +388,8 @@ if HAS_PYDANTIC:
             description="ID của Discord Webhook đồng bộ tín hiệu khi Web khởi động / sử dụng",
         )
         WEB_SYNC_WEBHOOK_URL: str = Field(
-            default="https://discord.com/api/webhooks/1568882621470089247/Q49ZOF2DnRtl82yiVgv7PYwuvufyrCqY4iSGq0ci43yXsvZA27AlO4mImX3KnH-NuuIO",
-            description="URL Discord Webhook đồng bộ giữa Web (Vercel) và Discord Bot",
+            default="",
+            description="URL Discord Webhook đồng bộ giữa Web (Vercel) và Discord Bot (Nạp qua ENV)",
         )
         EMBEDDING_ENABLED: bool = Field(
             default=False,
@@ -751,7 +751,7 @@ else:
             )
             self.WEB_SYNC_WEBHOOK_URL = os.environ.get(
                 "WEB_SYNC_WEBHOOK_URL",
-                "https://discord.com/api/webhooks/1568882621470089247/Q49ZOF2DnRtl82yiVgv7PYwuvufyrCqY4iSGq0ci43yXsvZA27AlO4mImX3KnH-NuuIO",
+                "",
             )
 
             self.CF_API_KEY = os.environ.get("CF_API_KEY")

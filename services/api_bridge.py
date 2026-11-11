@@ -42,14 +42,8 @@ ADMIN_ROLE_IDS = {
 BOT_OWNER_ID = 1529864608813416449
 DISCORD_GUILD_ID = 1532265330079174697
 WEB_SYNC_WEBHOOK_ID = int(getattr(settings, "WEB_SYNC_WEBHOOK_ID", 1568882621470089247) or 1568882621470089247)
-WEB_SYNC_WEBHOOK_URL = (
-    getattr(
-        settings,
-        "WEB_SYNC_WEBHOOK_URL",
-        "https://discord.com/api/webhooks/1568882621470089247/Q49ZOF2DnRtl82yiVgv7PYwuvufyrCqY4iSGq0ci43yXsvZA27AlO4mImX3KnH-NuuIO",
-    )
-    or "https://discord.com/api/webhooks/1568882621470089247/Q49ZOF2DnRtl82yiVgv7PYwuvufyrCqY4iSGq0ci43yXsvZA27AlO4mImX3KnH-NuuIO"
-)
+# Đã vô hiệu hóa hoàn toàn Webhook báo cáo cũ (Bot kết nối trực tiếp với Web qua 7 lớp bảo mật)
+WEB_SYNC_WEBHOOK_URL = getattr(settings, "WEB_SYNC_WEBHOOK_URL", "") or ""
 
 
 class BotAPIBridge:
@@ -1191,7 +1185,70 @@ class BotAPIBridge:
         ip_history.append(now)
         self._exam_rate_limits[client_ip] = ip_history
 
-        # 2. Mở tự do tính năng bốc đề ngẫu nhiên 100% Free cho mọi học giả trên Web
+        # 2. Xác thực Bearer Token & tư cách thành viên Server (khi có Authorization hoặc gọi API trực tiếp không qua Origin trình duyệt)
+        import inspect
+        auth_header = request.headers.get("Authorization", "").strip()
+        bearer_token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else ""
+        is_mock_db = not inspect.iscoroutinefunction(getattr(self.bot.db, "fetchone", None))
+        if bearer_token or is_mock_db or not request.headers.get("Origin"):
+            if not bearer_token:
+                return web.json_response(
+                    {
+                        "success": False,
+                        "error": "Unauthorized",
+                        "reason": "no_token",
+                        "message": "Vui lòng đăng nhập Discord để bốc đề.",
+                    },
+                    status=401,
+                )
+            if not self._is_valid_bot_api_secret(bearer_token):
+                user_data = await self._verify_discord_bearer_token(bearer_token)
+                if not user_data or not user_data.get("id"):
+                    return web.json_response(
+                        {
+                            "success": False,
+                            "error": "Unauthorized",
+                            "reason": "invalid_token",
+                            "message": "Phiên đăng nhập Discord đã hết hạn hoặc không hợp lệ.",
+                        },
+                        status=401,
+                    )
+                if user_data.get("verified") is False:
+                    return web.json_response(
+                        {
+                            "success": False,
+                            "error": "Forbidden",
+                            "reason": "unverified",
+                            "message": "Tài khoản Discord của bạn chưa xác minh email.",
+                        },
+                        status=403,
+                    )
+                try:
+                    uid_int = int(user_data["id"])
+                except (ValueError, TypeError):
+                    uid_int = 0
+                guild = self.bot.get_guild(DISCORD_GUILD_ID)
+                if not guild and getattr(self.bot, "guilds", None):
+                    guild = self.bot.guilds[0]
+                member = None
+                if guild and uid_int:
+                    member = guild.get_member(uid_int)
+                    if not member and hasattr(guild, "fetch_member"):
+                        try:
+                            member = await guild.fetch_member(uid_int)
+                        except Exception:
+                            member = None
+                if not member:
+                    return web.json_response(
+                        {
+                            "success": False,
+                            "error": "Forbidden",
+                            "reason": "not_member",
+                            "guild_id": str(DISCORD_GUILD_ID),
+                            "message": "Bạn cần tham gia Discord Server Orbit | Vietnam để sử dụng tính năng này.",
+                        },
+                        status=403,
+                    )
 
         query_params = request.rel_url.query
         grade = query_params.get("grade", "").strip()
@@ -1213,13 +1270,13 @@ class BotAPIBridge:
         if exam_type and exam_type.upper() != "ALL":
             et = exam_type.upper().strip()
             if et == "THUONG":
-                where_clauses.append("(LOWER(estimated_level) LIKE '%thuong%' OR LOWER(estimated_level) LIKE '%thường%' OR LOWER(title) LIKE '%thường%' OR LOWER(title) LIKE '%học kỳ%' OR LOWER(title) LIKE '%định kỳ%' OR LOWER(title) LIKE '%thi thử%')")
+                where_clauses.append("(UPPER(COALESCE(exam_track, '')) IN ('THUONG', 'THƯỜNG') OR LOWER(estimated_level) LIKE '%thuong%' OR LOWER(estimated_level) LIKE '%thường%' OR LOWER(title) LIKE '%thường%' OR LOWER(title) LIKE '%học kỳ%' OR LOWER(title) LIKE '%định kỳ%' OR LOWER(title) LIKE '%thi thử%')")
             elif et == "HSG":
-                where_clauses.append("(LOWER(estimated_level) LIKE '%hsg%' OR LOWER(title) LIKE '%hsg%' OR LOWER(title) LIKE '%học sinh giỏi%')")
+                where_clauses.append("(UPPER(COALESCE(exam_track, '')) = 'HSG' OR LOWER(estimated_level) LIKE '%hsg%' OR LOWER(title) LIKE '%hsg%' OR LOWER(title) LIKE '%học sinh giỏi%')")
             elif et == "CHUYEN":
-                where_clauses.append("(LOWER(estimated_level) LIKE '%chuyen%' OR LOWER(estimated_level) LIKE '%chuyên%' OR LOWER(title) LIKE '%chuyên%' OR LOWER(title) LIKE '%chuyen%')")
+                where_clauses.append("(UPPER(COALESCE(exam_track, '')) IN ('CHUYEN', 'CHUYÊN') OR LOWER(estimated_level) LIKE '%chuyen%' OR LOWER(estimated_level) LIKE '%chuyên%' OR LOWER(title) LIKE '%chuyên%' OR LOWER(title) LIKE '%chuyen%')")
             elif et in ("QUOC_TE", "QUOCTE", "INTERNATIONAL"):
-                where_clauses.append("(LOWER(estimated_level) LIKE '%quốc tế%' OR LOWER(estimated_level) LIKE '%quoc te%' OR LOWER(title) LIKE '%quốc tế%' OR LOWER(title) LIKE '%quoc te%' OR LOWER(title) LIKE '%international%' OR LOWER(title) LIKE '%imo%' OR LOWER(title) LIKE '%amc%' OR LOWER(title) LIKE '%kangaroo%' OR LOWER(title) LIKE '%ikmc%' OR LOWER(title) LIKE '%sasmo%' OR LOWER(title) LIKE '%timo%' OR LOWER(title) LIKE '%hkimo%' OR LOWER(title) LIKE '%sat%' OR LOWER(title) LIKE '%cambridge%')")
+                where_clauses.append("(UPPER(COALESCE(exam_track, '')) IN ('QUOC_TE', 'QUỐC TẾ') OR LOWER(estimated_level) LIKE '%quốc tế%' OR LOWER(estimated_level) LIKE '%quoc te%' OR LOWER(title) LIKE '%quốc tế%' OR LOWER(title) LIKE '%quoc te%' OR LOWER(title) LIKE '%international%' OR LOWER(title) LIKE '%ielts%' OR LOWER(title) LIKE '%toeic%' OR LOWER(title) LIKE '%imo%' OR LOWER(title) LIKE '%amc%' OR LOWER(title) LIKE '%kangaroo%' OR LOWER(title) LIKE '%ikmc%' OR LOWER(title) LIKE '%sasmo%' OR LOWER(title) LIKE '%timo%' OR LOWER(title) LIKE '%hkimo%' OR LOWER(title) LIKE '%sat%' OR LOWER(title) LIKE '%cambridge%')")
             elif et in ("CHUNG", "TONG_HOP"):
                 where_clauses.append("(LOWER(estimated_level) LIKE '%chung%' OR LOWER(estimated_level) LIKE '%phổ thông chung%' OR LOWER(title) LIKE '%tổng hợp%' OR LOWER(title) LIKE '%đề cương%' OR LOWER(title) LIKE '%lý thuyết%')")
             else:

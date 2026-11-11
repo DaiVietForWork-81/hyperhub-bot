@@ -1363,7 +1363,8 @@ class DocumentIntakeCog(commands.Cog):
         # 1. Quét tệp đính kèm (Attachments) — hỗ trợ gửi nhiều tệp cùng lúc (miễn mỗi tệp <= 25MB)
         if message.attachments:
             for att in message.attachments:
-                if att.size and att.size > 25 * 1024 * 1024:
+                att_size = getattr(att, "size", 0)
+                if isinstance(att_size, (int, float)) and att_size > 25 * 1024 * 1024:
                     continue
                 ext = Path(att.filename).suffix.lower()
                 if ext not in [".pdf", ".docx", ".doc", ".txt", ".cpp", ".py", ".zip", ".rar", ".7z", ".png", ".jpg", ".jpeg", ".webp", ".bmp"]:
@@ -1396,7 +1397,11 @@ class DocumentIntakeCog(commands.Cog):
                         subject_name = res.subject
                         if res.grade:
                             grade_str = f"Lớp {res.grade}"
-                            lang_tag = f" • [{res.programming_language}]" if getattr(res, "programming_language", None) else ""
+                            lang_tag = (
+                                f" • [{res.programming_language}]"
+                                if getattr(res, "programming_language", None) and subject_name in ("INFORMATICS", "TIN_HOC")
+                                else ""
+                            )
                             level_str = f"{grade_str} ({res.track}){lang_tag}"
                         else:
                             level_str = "Chung ( chung cho tất cả khối )"
@@ -1470,7 +1475,11 @@ class DocumentIntakeCog(commands.Cog):
                         subject_name = res.subject
                         if res.grade:
                             grade_str = f"Lớp {res.grade}"
-                            lang_tag = f" • [{res.programming_language}]" if getattr(res, "programming_language", None) else ""
+                            lang_tag = (
+                                f" • [{res.programming_language}]"
+                                if getattr(res, "programming_language", None) and subject_name in ("INFORMATICS", "TIN_HOC")
+                                else ""
+                            )
                             level_str = f"{grade_str} ({res.track}){lang_tag}"
                         else:
                             level_str = "Chung ( chung cho tất cả khối )"
@@ -2088,7 +2097,8 @@ class DocumentIntakeCog(commands.Cog):
                     targets_to_check: list[tuple[bytes | str, Optional[str]]] = []
                     if message.attachments:
                         for att in message.attachments:
-                            if att.size and att.size > 25 * 1024 * 1024:
+                            att_size = getattr(att, "size", 0)
+                            if isinstance(att_size, (int, float)) and att_size > 25 * 1024 * 1024:
                                 continue
                             targets_to_check.append((await att.read(), att.filename))
                     else:

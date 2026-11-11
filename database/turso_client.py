@@ -38,7 +38,12 @@ class TursoClient:
         return bool(self.base_url and self.auth_token)
 
     async def _get_session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
+        loop_closed = False
+        if self._session is not None:
+            sess_loop = getattr(self._session, "_loop", None)
+            if sess_loop is not None and sess_loop.is_closed():
+                loop_closed = True
+        if self._session is None or self._session.closed or loop_closed:
             self._session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=15.0),
                 headers={
