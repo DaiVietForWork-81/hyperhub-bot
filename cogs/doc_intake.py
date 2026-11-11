@@ -388,18 +388,21 @@ class DocumentIntakeCog(commands.Cog):
             except Exception as e:
                 log.debug("Bỏ qua quét SQLite trong chu kỳ 45s: %s", e)
 
-        # 2. Rà soát các đề đã tổng hợp trên Turso Cloud
+        # 2. Kéo mọi đề mới từ Cầu nối Turso Cloud về Server Master DB (data/bot.db) & đưa vào hàng đợi 45s
         if turso_db.is_configured:
             try:
                 turso_rows = await turso_db.fetchall(
                     """
-                    SELECT id, COALESCE(title, file_name) AS title, file_name,
+                    SELECT id, COALESCE(title, file_name) AS title, file_name, file_size_bytes, file_type,
                            COALESCE(raw_text, '') AS raw_text, COALESCE(notes, '') AS notes,
-                           subject, estimated_level
+                           subject, estimated_level, question_count, page_count, author_id, author_name,
+                           channel_id, message_id, jump_url, timestamp, file_hash, academic_year,
+                           school_or_department, verdict, exam_track
                     FROM documents_archive
                     WHERE (verdict IS NULL OR verdict != 'CLOUD_DEEP_VERIFIED')
+                       OR LENGTH(COALESCE(raw_text, '')) > 500
                     ORDER BY id DESC
-                    LIMIT 12
+                    LIMIT 16
                     """
                 )
                 for tr in turso_rows:
@@ -408,16 +411,65 @@ class DocumentIntakeCog(commands.Cog):
                     t_fname = tr.get("file_name") or t_title
                     t_text = (tr.get("raw_text") or "").strip()
                     t_notes = (tr.get("notes") or "").strip()
+                    # Đảm bảo bản ghi luôn được lưu đầy đủ tại Server Master DB (data/bot.db) trước khi thu gọn cầu nối Turso
+                    if t_id and hasattr(self.bot, "db"):
+                        try:
+                            existing_srv = await self.bot.db.fetchone(
+                                "SELECT id, LENGTH(COALESCE(raw_text, '')) FROM documents_archive WHERE id = ?",
+                                int(t_id),
+                            )
+                            if not existing_srv:
+                                await self.bot.db.execute(
+                                    """
+                                    INSERT OR REPLACE INTO documents_archive (
+                                        id, subject, title, file_name, file_size_bytes, file_type,
+                                        estimated_level, question_count, page_count, author_id,
+                                        author_name, channel_id, message_id, jump_url, timestamp,
+                                        file_hash, raw_text, notes, academic_year, school_or_department,
+                                        verdict, exam_track
+                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    """,
+                                    int(t_id),
+                                    tr.get("subject") or "GENERAL",
+                                    t_title,
+                                    t_fname,
+                                    int(tr.get("file_size_bytes") or 0),
+                                    tr.get("file_type") or "PDF",
+                                    tr.get("estimated_level") or "Khối 12",
+                                    int(tr.get("question_count") or 0),
+                                    int(tr.get("page_count") or 1),
+                                    int(tr.get("author_id") or 0),
+                                    tr.get("author_name") or "Khách (Web)",
+                                    int(tr.get("channel_id") or 0),
+                                    int(tr.get("message_id") or 0),
+                                    tr.get("jump_url") or "",
+                                    tr.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+                                    tr.get("file_hash") or "",
+                                    t_text,
+                                    t_notes,
+                                    tr.get("academic_year") or "",
+                                    tr.get("school_or_department") or "",
+                                    tr.get("verdict") or "",
+                                    tr.get("exam_track") or "THUONG",
+                                )
+                            elif len(t_text) > int(existing_srv[1] or 0):
+                                await self.bot.db.execute(
+                                    "UPDATE documents_archive SET raw_text = ? WHERE id = ?",
+                                    t_text,
+                                    int(t_id),
+                                )
+                        except Exception:
+                            pass
                     combined_turso_text = t_text if len(t_text) >= 20 else f"Tiêu đề đề thi: {t_title}\nTên tệp: {t_fname}\nGhi chú: {t_notes}"
-                    if t_id:
+                    if t_id and tr.get("verdict") != "CLOUD_DEEP_VERIFIED":
                         CloudExamVerifier.enqueue_for_45s_batch(
                             doc_id=t_id,
                             file_name=t_fname,
                             raw_text=combined_turso_text,
-                            metadata={"source": "turso", "title": t_title},
+                            metadata={"source": "turso_bridge", "title": t_title},
                         )
             except Exception as e:
-                log.debug("Bỏ qua quét Turso trong chu kỳ 45s: %s", e)
+                log.debug("Bỏ qua quét cầu nối Turso trong chu kỳ 45s: %s", e)
 
         # 3. Đẩy toàn bộ lô đã gom trong 45s qua lên AI Agent 3 Tầng (Model 550B)
         completed = await asyncio.to_thread(CloudExamVerifier.flush_45s_batch, 16)
@@ -431,15 +483,19 @@ class DocumentIntakeCog(commands.Cog):
             new_grade = str(v.get("grade_level") or "").strip()
             new_detailed = str(v.get("detailed_exam_track") or "").strip()
             raw_track = str(v.get("exam_track") or "THUONG").upper()
-            new_track = track_vi_map.get(raw_track, raw_track or "Thường")
+            if raw_track not in ("THUONG", "CHUYEN", "HSG", "QUOC_TE"):
+                raw_track = "THUONG"
+            new_track = raw_track
             new_school = v.get("school_or_department")
             new_year = v.get("academic_year")
             new_desc = str(v.get("exam_description") or "").strip()
             short_label = str(v.get("short_label") or "").strip()
 
-            est_level = new_grade
-            if new_detailed and new_detailed not in est_level:
-                est_level = f"{new_grade} ({new_detailed})" if new_grade else new_detailed
+            base_grade = re.sub(r"\s*\(.*?\)\s*", "", new_grade).strip() or new_grade
+            clean_detailed = re.sub(r"\s*\(.*?\)\s*", "", new_detailed).strip() or new_detailed
+            est_level = base_grade
+            if clean_detailed and clean_detailed.lower() not in est_level.lower():
+                est_level = f"{base_grade} ({clean_detailed})" if base_grade else clean_detailed
 
             subj_to_set = new_subj if (new_subj and new_subj != "GENERAL") else ""
 
@@ -471,6 +527,7 @@ class DocumentIntakeCog(commands.Cog):
                     except Exception:
                         pass
 
+                # Cầu nối Turso Cloud: Chỉ lưu metadata nhẹ & giải phóng hoàn toàn dữ liệu nặng (base64 + raw_text dài)
                 if turso_db.is_configured:
                     try:
                         await turso_db.execute(
@@ -482,7 +539,9 @@ class DocumentIntakeCog(commands.Cog):
                                 school_or_department = COALESCE(NULLIF(?, ''), school_or_department),
                                 academic_year = COALESCE(NULLIF(?, ''), academic_year),
                                 notes = COALESCE(NULLIF(?, ''), notes),
-                                verdict = 'CLOUD_DEEP_VERIFIED'
+                                verdict = 'CLOUD_DEEP_VERIFIED',
+                                file_content_base64 = NULL,
+                                raw_text = SUBSTR(COALESCE(raw_text, ''), 1, 400)
                             WHERE id = ?
                             """,
                             subj_to_set,
@@ -501,25 +560,42 @@ class DocumentIntakeCog(commands.Cog):
                     "file_name": item.get("file_name") or f"De_thi_{num_id}",
                     "subject": subj_to_set or "MATHEMATICS",
                     "estimated_level": est_level,
-                    "exam_track": new_track,
+                    "exam_track": track_vi_map.get(new_track, "Thường"),
                     "short_label": short_label,
                     "exam_description": new_desc,
                     "scanned_at": datetime.now(timezone.utc).isoformat(),
                 })
 
-        # 4. Lưu trạng thái Radar Quét Tự Động 45s lên Turso bot_kv_store để Web hiển thị thời gian thực
+        # 4. Lưu trạng thái Radar Quét Tự Động 45s (đọc từ CSDL gốc Server data/bot.db làm chuẩn, đẩy qua cầu nối Turso)
         if turso_db.is_configured:
             try:
                 now_ts = int(time.time())
-                stats_row = await turso_db.fetchone(
-                    """
-                    SELECT COUNT(*) AS total_docs,
-                           SUM(CASE WHEN verdict = 'CLOUD_DEEP_VERIFIED' THEN 1 ELSE 0 END) AS verified_docs
-                    FROM documents_archive
-                    """
-                )
-                total_docs = int((stats_row or {}).get("total_docs") or 0)
-                verified_docs = int((stats_row or {}).get("verified_docs") or 0)
+                total_docs = 0
+                verified_docs = 0
+                if hasattr(self.bot, "db"):
+                    try:
+                        srv_row = await self.bot.db.fetchone(
+                            """
+                            SELECT COUNT(*) AS total_docs,
+                                   SUM(CASE WHEN verdict = 'CLOUD_DEEP_VERIFIED' OR quorum_status = 'CLOUD_DEEP_VERIFIED' THEN 1 ELSE 0 END) AS verified_docs
+                            FROM documents_archive
+                            """
+                        )
+                        if srv_row:
+                            total_docs = int(srv_row[0] or 0)
+                            verified_docs = int(srv_row[1] or 0)
+                    except Exception:
+                        pass
+                if total_docs == 0:
+                    stats_row = await turso_db.fetchone(
+                        """
+                        SELECT COUNT(*) AS total_docs,
+                               SUM(CASE WHEN verdict = 'CLOUD_DEEP_VERIFIED' THEN 1 ELSE 0 END) AS verified_docs
+                        FROM documents_archive
+                        """
+                    )
+                    total_docs = int((stats_row or {}).get("total_docs") or 0)
+                    verified_docs = int((stats_row or {}).get("verified_docs") or 0)
                 unverified_docs = max(0, total_docs - verified_docs)
 
                 prev_kv = await turso_db.fetchone(
@@ -535,6 +611,9 @@ class DocumentIntakeCog(commands.Cog):
                 merged_recent = (recent_scanned_items + prev_recent)[:12]
                 scanner_payload = {
                     "active": True,
+                    "storage_architecture": "server_master_turso_bridge",
+                    "master_db": "server_sqlite_and_discord_archive",
+                    "bridge": "turso_cloud_relay",
                     "interval_seconds": 45,
                     "last_scan_ts": now_ts,
                     "next_scan_ts": now_ts + 45,
@@ -558,11 +637,15 @@ class DocumentIntakeCog(commands.Cog):
                 log.debug("Không thể ghi bot_45s_scanner_status lên Turso: %s", e)
 
         if updated_count > 0:
-            log.info("✅ [Chu kỳ 45s] Bot đã quét & chuẩn hóa chuyên sâu cho %d đề thi đã tổng hợp.", updated_count)
+            log.info("✅ [Chu kỳ 45s] Bot đã quét & chuẩn hóa chuyên sâu cho %d đề thi trên Server DB.", updated_count)
         return updated_count
 
     async def sync_pending_turso_documents(self) -> int:
-        """Đồng bộ các đề thi nộp từ Web lúc Bot offline từ Turso Cloud sang các kênh Discord."""
+        """
+        Cầu nối Turso Cloud -> Server Master DB:
+        Kéo mọi đề thi mới hoặc còn tồn đọng base64/chưa có message_id từ cầu nối Turso về lưu vĩnh viễn
+        tại Server DB (data/bot.db + kênh Discord #database 1556682296235393034), sau đó giải phóng tải nặng trên Turso.
+        """
         from database.turso_client import turso_db
         if not turso_db.is_configured:
             return 0
@@ -577,6 +660,9 @@ class DocumentIntakeCog(commands.Cog):
                    has_answer_keys, has_detailed_solutions, file_content_base64
             FROM documents_archive
             WHERE queue_status = 'pending_bot'
+               OR (file_content_base64 IS NOT NULL AND file_content_base64 != '')
+               OR COALESCE(channel_id, 0) = 0
+               OR COALESCE(message_id, 0) = 0
             ORDER BY id ASC
             LIMIT 10
             """
@@ -703,6 +789,7 @@ class DocumentIntakeCog(commands.Cog):
 
                 # Chuẩn bị tệp đính kèm thật từ base64 nếu có
                 discord_file: discord.File | None = None
+                file_bytes: bytes | None = None
                 if raw_b64:
                     try:
                         clean_b64 = raw_b64.split(",", 1)[1] if "," in raw_b64 else raw_b64
@@ -718,16 +805,17 @@ class DocumentIntakeCog(commands.Cog):
 
                     posted_msg = await target_ch.send(**send_kwargs)
                     if posted_msg:
-                        # Cập nhật trạng thái và giải phóng file_content_base64 trong Turso để bảo toàn 5GB storage
-                        await turso_db.execute(
-                            """UPDATE documents_archive 
-                               SET queue_status = 'synced_discord', channel_id = ?, message_id = ?, jump_url = ?, file_content_base64 = NULL 
-                               WHERE id = ?""",
-                            target_ch.id,
-                            posted_msg.id,
-                            posted_msg.jump_url,
-                            doc_id,
-                        )
+                        full_raw_text = str(doc.get("raw_text") or "")
+                        if file_bytes and len(full_raw_text) < 300:
+                            try:
+                                from DocInspector.extractors import FastDocumentExtractor
+                                ex_res = await asyncio.to_thread(FastDocumentExtractor.extract, file_bytes, file_name)
+                                if ex_res and getattr(ex_res, "full_text", None):
+                                    full_raw_text = ex_res.full_text[:65000]
+                            except Exception:
+                                pass
+
+                        # 1. Lưu đầy đủ vào Server Master DB (data/bot.db)
                         if hasattr(self.bot, "db"):
                             try:
                                 await self.bot.db.execute(
@@ -743,12 +831,29 @@ class DocumentIntakeCog(commands.Cog):
                                     grade, q_cnt, p_cnt, doc.get("author_id", 0),
                                     author_name, target_ch.id, posted_msg.id, posted_msg.jump_url,
                                     doc.get("timestamp") or datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                                    doc.get("file_hash"), doc.get("raw_text", ""), doc.get("notes", ""), academic_year, school
+                                    doc.get("file_hash"), full_raw_text, doc.get("notes", ""), academic_year, school
                                 )
                             except Exception:
                                 pass
+
+                        # 2. Cầu nối Turso Cloud: Giải phóng hoàn toàn file_content_base64 và thu gọn raw_text
+                        await turso_db.execute(
+                            """UPDATE documents_archive 
+                               SET queue_status = 'synced_discord',
+                                   channel_id = ?,
+                                   message_id = ?,
+                                   jump_url = ?,
+                                   file_content_base64 = NULL,
+                                   raw_text = SUBSTR(COALESCE(?, ''), 1, 400)
+                               WHERE id = ?""",
+                            target_ch.id,
+                            posted_msg.id,
+                            posted_msg.jump_url,
+                            full_raw_text,
+                            doc_id,
+                        )
                         synced_count += 1
-                        log.info("Đã tự động đồng bộ đề thi #%s (%s) kèm tệp thật từ Turso Cloud sang Discord thành công!", doc_id, title)
+                        log.info("Đã đồng bộ đề thi #%s (%s) từ cầu nối Turso về Server DB & Discord #database!", doc_id, title)
                 except Exception as post_err:
                     log.warning("Lỗi khi gửi đề từ Turso sang Discord: %s", post_err)
         return synced_count
@@ -1211,12 +1316,12 @@ class DocumentIntakeCog(commands.Cog):
                         message.jump_url,
                         now_iso,
                         file_hash,
-                        raw_text[:50000] if raw_text else "",
+                        raw_text[:400] if raw_text else "",
                         report.human_summary,
                         acad_yr,
                         sch_dept,
                         _verdict or "XAC_MINH",
-                        _track or "NOT_AN_EXAM",
+                        _track if _track in ("THUONG", "CHUYEN", "HSG", "QUOC_TE") else "THUONG",
                         _conf or 0.95,
                         is_m25,
                         p1_cnt,

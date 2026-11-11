@@ -602,27 +602,56 @@ def _deterministic_post_audit(
     """
     Agent 2 (Deterministic Trap Auditor):
     Kiểm toán hậu kiểm bằng luật cứng sau khi Agent 1 (550B) trả kết quả,
-    đảm bảo không bao giờ lọt bẫy Tuyển sinh vào 10 hay Trường Chuyên thi thử.
+    đảm bảo không bao giờ lọt bẫy Tuyển sinh vào 10, Trường Chuyên thi thử,
+    sai môn Vật lí/Hóa/Sinh/Văn/Tin, hay sai hệ CHUNG/THUONG/CHUYEN/HSG/QUOC_TE.
     """
+    import unicodedata
+
     result = dict(parsed)
-    head_text = f"{file_name}\n{(raw_text or '')[:1500]}".lower()
+    fn_clean = unicodedata.normalize("NFC", file_name or "")
+    raw_clean = unicodedata.normalize("NFC", (raw_text or "")[:2000])
+    fn_lower = fn_clean.lower()
+    head_text = f"{fn_clean}\n{raw_clean}".lower()
 
-    # Kiểm toán Bẫy 2: Tuyển sinh vào lớp 10 LUÔN LUÔN là Khối 9
-    if re.search(
-        r"(tuyển\s*sinh\s*(?:vào\s*)?(?:lớp\s*)?10|thi\s*vào\s*(?:lớp\s*)?10|ôn\s*thi\s*vào\s*(?:lớp\s*)?10|chuyên\s*(?:anh|toán|văn|lí|lý|hóa|sinh|tin|sử|địa)\s*(?:hà\s*nội\s*amsterdam|amsterdam|sư\s*phạm|khtn|ngoại\s*ngữ))",
-        head_text,
-    ) and not re.search(r"(lớp\s*11|lớp\s*12|tốt\s*nghiệp\s*thpt)", head_text):
-        result["grade_level"] = "Khối 9"
-        if re.search(r"(chuyên|môn\s*chuyên|hệ\s*chuyên|amsterdam)", head_text):
-            result["exam_track"] = "CHUYEN"
-            result["detailed_exam_track"] = "Đề thi tuyển sinh vào lớp 10 Chuyên"
-        else:
-            result["exam_track"] = "THUONG"
-            result["detailed_exam_track"] = "Đề thi tuyển sinh vào lớp 10"
+    # 0. Chuẩn hóa exam_track: Không bao giờ để lọt 'CHUNG', 'THI_THU_THPT' hoặc giá trị lạ
+    raw_track_val = str(result.get("exam_track") or "THUONG").upper().strip()
+    track_norm_map = {
+        "THUONG": "THUONG",
+        "THƯỜNG": "THUONG",
+        "CHUNG": "THUONG",
+        "DAI_TRA": "THUONG",
+        "THI_THU_THPT": "THUONG",
+        "CHUYEN": "CHUYEN",
+        "CHUYÊN": "CHUYEN",
+        "HSG": "HSG",
+        "OLYMPIC": "HSG",
+        "QUOC_TE": "QUOC_TE",
+        "QUỐC TẾ": "QUOC_TE",
+    }
+    result["exam_track"] = track_norm_map.get(raw_track_val, "THUONG")
 
-    # Kiểm toán tài liệu chuyên đề / cẩm nang / sách tham khảo từ tên file
-    fn_lower = (file_name or "").lower()
-    if any(
+    # 1. Kiểm toán Môn học từ tên tệp / tiêu đề rõ ràng (chống nhầm Vật lí -> Toán, Văn -> Sử, v.v.)
+    if re.search(r"(vật\s*lí|vật\s*lý|vat[-_\s]+li|vat[-_\s]+ly)", fn_lower):
+        result["subject"] = "PHYSICS"
+    elif re.search(r"(hóa\s*học|hoa[-_\s]+hoc|lấy\s*gốc\s*hóa|lay[-_\s]+goc[-_\s]+hoa|dạy\s*thêm\s*hóa|day[-_\s]+them[-_\s]+hoa)", fn_lower):
+        result["subject"] = "CHEMISTRY"
+    elif re.search(r"(sinh\s*học|sinh[-_\s]+hoc)", fn_lower):
+        result["subject"] = "BIOLOGY"
+    elif re.search(
+        r"(ngữ\s*văn|ngu[-_\s]+van|môn\s*văn|mon[-_\s]+van|nlxh|nlvh|nghị[-_\s]*luận|nghi[-_\s]*luan|"
+        r"đọc\s*hiểu|doc[-_\s]+hieu|điển[-_\s]*tích|dẫn\s*chứng|vốn\s*từ|làm\s*văn|"
+        r"y[-_\s]+nghia[-_\s]+nhan[-_\s]+e|ý\s*nghĩa\s*nhan\s*đề|ly\s*luan\s*van\s*hoc|lý\s*luận\s*văn\s*học|"
+        r"tác\s*phẩm\s*thơ|tac[-_\s]+pham[-_\s]+tho|sương\s*mai)",
+        fn_lower,
+    ):
+        result["subject"] = "LITERATURE"
+    elif re.search(
+        r"(tin\s*học|tin[-_\s]+hoc|chuyên[-_\s]*tin|chuyen[-_\s]*tin|lập[-_\s]*trình|lap[-_\s]*trinh|"
+        r"thuật[-_\s]*toán|thuat[-_\s]*toan|python|c\+\+|pascal)",
+        fn_lower,
+    ):
+        result["subject"] = "INFORMATICS"
+    elif any(
         k in fn_lower
         for k in (
             "vách-ngăn-và-bó",
@@ -631,41 +660,156 @@ def _deterministic_post_audit(
             "bất đẳng thức",
             "phương trình hàm",
             "tổ hợp xác suất",
+            "môn toán",
+            "mon-toan",
+            "toán học",
+            "toán 9",
+            "toan-9",
+            "toan 9",
+            "toán 10",
+            "toán 11",
+            "toán 12",
+            "đại số",
+            "hình học",
+            "toán vào 10",
+            "toan-vao-10",
+            "chuyên đề toán",
         )
     ):
         result["subject"] = "MATHEMATICS"
-        if not result.get("detailed_exam_track") or "thi" in str(result.get("detailed_exam_track", "")).lower():
-            result["detailed_exam_track"] = "Đề cương / Tài liệu ôn tập"
-            result["exam_track"] = "THUONG"
     elif any(
         k in fn_lower
-        for k in ("điển-tích", "điển tích", "điển-cố", "nlxh", "nlvh", "nghị-luận", "nghị luận")
-    ):
-        result["subject"] = "LITERATURE"
-        if any(b in fn_lower for b in ("hành-trang", "hành trang", "200-", "cẩm-nang", "cẩm nang", "sổ-tay", "tổng-hợp")):
-            result["detailed_exam_track"] = "Đề cương / Tài liệu ôn tập"
-            result["exam_track"] = "THUONG"
-    elif any(
-        k in fn_lower
-        for k in ("ielts", "toeic", "idioms", "grammar", "vocabulary", "tieng anh", "tiếng anh", "chuyên-anh", "chuyên anh")
+        for k in (
+            "ielts",
+            "toeic",
+            "toefl",
+            "idioms",
+            "grammar",
+            "vocabulary",
+            "tieng anh",
+            "tiếng anh",
+            "chuyên-anh",
+            "chuyên anh",
+            "wordform",
+            "word form",
+            "open cloze",
+            "guided cloze",
+            "phrasal verbs",
+            "pronunciation",
+            "conditionals",
+            "inversions",
+            "writing task",
+            "speaking",
+            "listening",
+            "reading",
+            "sentence transformation",
+        )
     ):
         result["subject"] = "ENGLISH"
-        if any(k in fn_lower for k in ("ielts", "toeic")):
-            result["exam_track"] = "QUOC_TE"
-            result["detailed_exam_track"] = "Đề luyện thi Chứng chỉ Quốc tế (IELTS/TOEIC/SAT)"
+
+    # 2. Kiểm toán Khối lớp (Grade Level) chuẩn xác từ tên tệp & tiêu đề
+    # Bẫy 2: Tuyển sinh vào lớp 10 / Thi vào 10 / 9 vào 10 / Lớp 9 LUÔN LUÔN là Khối 9
+    if re.search(
+        r"(tuyển\s*sinh\s*(?:vào\s*)?(?:lớp\s*)?10|tuyen[-_\s]+sinh[-_\s]+vao[-_\s]+lop[-_\s]+10|"
+        r"thi\s*vào\s*(?:lớp\s*)?10|thi[-_\s]+vao[-_\s]+(?:lop[-_\s]+)?10|"
+        r"ôn\s*thi\s*vào\s*(?:lớp\s*)?10|on[-_\s]+thi[-_\s]+vao[-_\s]+(?:lop[-_\s]+)?10|"
+        r"vào[-_\s]+lớp[-_\s]+10|vao[-_\s]+lop[-_\s]+10|toan[-_\s]+vao[-_\s]+10|9[-_\s]+vao[-_\s]+10|"
+        r"chuyên\s*(?:anh|toán|văn|lí|lý|hóa|sinh|tin|sử|địa)\s*(?:hà\s*nội\s*amsterdam|amsterdam|sư\s*phạm|khtn|ngoại\s*ngữ)|"
+        r"csp[-_\s]+thi[-_\s]+thu|đề\s*sở\s*hà\s*nội|hsgtp\s*hà\s*nội)",
+        head_text,
+    ) and not re.search(r"(lớp\s*11|lớp\s*12|tốt\s*nghiệp\s*thpt|thptqg)", head_text):
+        result["grade_level"] = "Khối 9"
+        if re.search(r"(hsg|hsgtp|học\s*sinh\s*giỏi|hoc[-_\s]+sinh[-_\s]+gioi)", head_text):
+            result["exam_track"] = "HSG"
+            result["detailed_exam_track"] = "Đề thi Học sinh giỏi"
+        elif re.search(r"(chuyên|chuyen|môn\s*chuyên|hệ\s*chuyên|amsterdam|csp|khtn)", head_text):
+            result["exam_track"] = "CHUYEN"
+            result["detailed_exam_track"] = "Đề thi tuyển sinh vào lớp 10 Chuyên"
+        else:
+            result["exam_track"] = "THUONG"
+            result["detailed_exam_track"] = "Đề thi tuyển sinh vào lớp 10"
+    elif re.search(
+        r"(toán[-_\s]*9|toan[-_\s]*9|văn[-_\s]*9|van[-_\s]*9|anh[-_\s]*9|sinh[-_\s]*học[-_\s]*9|sinh[-_\s]*hoc[-_\s]*9|"
+        r"hóa[-_\s]*học[-_\s]*(?:lớp[-_\s]*)?9|hoa[-_\s]*hoc[-_\s]*(?:lop[-_\s]*)?9|vật[-_\s]*l[íý][-_\s]*9|vat[-_\s]*l[iy][-_\s]*9|"
+        r"khtn[-_\s]*9|lớp[-_\s]*9|lop[-_\s]*9|khối[-_\s]*9|lấy\s*gốc\s*(?:hóa|hình\s*học)\s*thcs|lay[-_\s]+goc[-_\s]+(?:hoa|hinh[-_\s]+hoc)[-_\s]+thcs)",
+        fn_lower,
+    ):
+        result["grade_level"] = "Khối 9"
+    elif re.search(
+        r"(toán[-_\s]*(?:học[-_\s]*)?11|toan[-_\s]*(?:hoc[-_\s]*)?11|tiếng[-_\s]*anh[-_\s]*11|tieng[-_\s]*anh[-_\s]*11|"
+        r"vật[-_\s]*l[íý][-_\s]*11|hóa[-_\s]*(?:học[-_\s]*)?11|sinh[-_\s]*(?:học[-_\s]*)?11|ngữ[-_\s]*văn[-_\s]*11|"
+        r"lớp[-_\s]*11|lop[-_\s]*11|khối[-_\s]*11|2k9)",
+        fn_lower,
+    ):
+        result["grade_level"] = "Khối 11"
+    elif re.search(
+        r"(toán[-_\s]*(?:học[-_\s]*)?10|toan[-_\s]*(?:hoc[-_\s]*)?10|đại[-_\s]*số[-_\s]*10|dai[-_\s]*so[-_\s]*10|"
+        r"tiếng[-_\s]*anh[-_\s]*10|tieng[-_\s]*anh[-_\s]*10|tin[-_\s]*học[-_\s]*10|tin[-_\s]*hoc[-_\s]*10|"
+        r"vật[-_\s]*l[íý][-_\s]*10|hóa[-_\s]*(?:học[-_\s]*)?10|lớp[-_\s]*10|lop[-_\s]*10|khối[-_\s]*10|2k10)",
+        fn_lower,
+    ) and not re.search(r"(vào[-_\s]*(?:lớp[-_\s]*)?10|vao[-_\s]*(?:lop[-_\s]*)?10|thi[-_\s]*vào[-_\s]*10)", fn_lower):
+        result["grade_level"] = "Khối 10"
+    elif re.search(
+        r"(tốt\s*nghiệp\s*thpt|thptqg|ôn\s*thi\s*thpt|vật[-_\s]*l[íý][-_\s]*12|toán[-_\s]*(?:học[-_\s]*)?12|"
+        r"hóa[-_\s]*(?:học[-_\s]*)?12|sinh[-_\s]*(?:học[-_\s]*)?12|văn[-_\s]*12|tiếng[-_\s]*anh[-_\s]*12|"
+        r"lớp[-_\s]*12|lop[-_\s]*12|khối[-_\s]*12|đánh\s*giá\s*năng\s*lực|công\s*phá\s*tiếng\s*anh|thủ[-_\s]*khoa[-_\s]*khối)",
+        fn_lower,
+    ):
+        result["grade_level"] = "Khối 12"
+        if "tốt nghiệp thpt" in fn_lower or "thptqg" in fn_lower:
+            result["exam_track"] = "THUONG"
+            result["detailed_exam_track"] = "Đề thi Tốt nghiệp THPT Quốc gia"
+        elif "công phá tiếng anh" in fn_lower:
+            result["exam_track"] = "THUONG"
+            result["detailed_exam_track"] = "Đề cương / Tài liệu ôn tập"
+
+    # 3. Kiểm toán Hệ Đề (exam_track: THUONG, CHUYEN, HSG, QUOC_TE) từ tên tệp & ngữ cảnh
+    if re.search(r"(ielts|toeic|toefl|\bsat\b|\bcpe\b|cambridge|kangaroo|ikmc|writing\s*task\s*[12])", fn_lower):
+        result["exam_track"] = "QUOC_TE"
+        result["detailed_exam_track"] = "Đề luyện thi Chứng chỉ Quốc tế (IELTS/TOEIC/SAT)"
+        if not re.search(r"Khối\s*(?:6|7|8|9|10|11|12)", str(result.get("grade_level") or "")):
+            result["grade_level"] = "Chứng chỉ Quốc tế"
+    elif re.search(
+        r"(bdhsg|bồi\s*dưỡng\s*hsg|boi[-_\s]+duong[-_\s]+hsg|bồi\s*dưỡng\s*học\s*sinh\s*giỏi|"
+        r"boi[-_\s]+duong[-_\s]+hoc[-_\s]+sinh[-_\s]+gioi|đề\s*thi\s*hsg|đề\s*hsg|hsgtp|chọn\s*học\s*sinh\s*giỏi|olympic)",
+        fn_lower,
+    ):
+        result["exam_track"] = "HSG"
+        result["detailed_exam_track"] = "Đề thi / Tài liệu Bồi dưỡng Học sinh giỏi"
+    elif re.search(
+        r"(chuyên[-_\s]*anh|chuyen[-_\s]*anh|chuyên[-_\s]*tin|chuyen[-_\s]*tin|chuyên[-_\s]*toán|chuyen[-_\s]*toan|"
+        r"chuyên[-_\s]*l[íý]|chuyen[-_\s]*l[iy]|chuyên[-_\s]*hóa|chuyen[-_\s]*hoa|chuyên[-_\s]*sinh|chuyen[-_\s]*sinh|"
+        r"chuyên[-_\s]*văn|chuyen[-_\s]*van|chuyên[-_\s]*khtn|chuyen[-_\s]*khtn|thpt[-_\s]*chuyên[-_\s]*môn|"
+        r"thuat[-_\s]*toan[-_\s]*cpp|thuật\s*toán)",
+        fn_lower,
+    ) and not re.search(r"(thi\s*thử\s*tốt\s*nghiệp|giữa\s*hk|giua[-_\s]+hk|cuối\s*hk|học\s*kỳ|hoc[-_\s]+ki)", fn_lower):
+        result["exam_track"] = "CHUYEN"
+        if not result.get("detailed_exam_track") or "thường" in str(result.get("detailed_exam_track", "")).lower():
+            result["detailed_exam_track"] = "Đề thi / Chuyên đề Hệ Chuyên"
 
     # Kiểm toán Bẫy 1: Đề thi thử TN THPT / Giữa kỳ / Học kỳ của Trường THPT Chuyên -> THUONG
     det_lower = str(result.get("detailed_exam_track") or "").lower()
     if any(
-        kw in det_lower
-        for kw in ("thi thử", "tốt nghiệp", "học kỳ", "giữa học kỳ", "giữa kỳ", "khảo sát")
+        kw in det_lower or kw in fn_lower
+        for kw in ("thi thử tốt nghiệp", "tốt nghiệp thpt", "thptqg", "giữa học kỳ", "giữa kỳ", "giua-hk", "kiem-tra-dinh-ki", "kiểm tra định kì")
     ):
         if str(result.get("exam_track") or "").upper() in ("CHUYEN", "HSG"):
             if not re.search(
-                r"(chọn\s*học\s*sinh\s*giỏi|đề\s*thi\s*hsg|chọn\s*đội\s*tuyển|olympic)",
+                r"(chọn\s*học\s*sinh\s*giỏi|đề\s*thi\s*hsg|bdhsg|chọn\s*đội\s*tuyển|olympic|tuyển\s*sinh\s*vào\s*lớp\s*10\s*chuyên)",
                 head_text,
             ):
                 result["exam_track"] = "THUONG"
+
+    # 4. Chuẩn hóa tên Khối lớp sạch sẽ (không để lồng ngoặc kép hoặc dính • [Pascal] sai môn)
+    raw_grade = str(result.get("grade_level") or "").strip()
+    m_grade = re.search(r"(?:khối|lớp)\s*(1[012]|[6789])", raw_grade, flags=re.IGNORECASE)
+    if m_grade:
+        result["grade_level"] = f"Khối {m_grade.group(1)}"
+    elif result.get("exam_track") == "QUOC_TE":
+        result["grade_level"] = "Chứng chỉ Quốc tế"
+    else:
+        # Nếu là tài liệu NLXH/NLVH/Ngữ pháp/Từ vựng THPT chưa rõ lớp -> Mặc định Khối 12 (Ôn thi THPT)
+        result["grade_level"] = "Khối 12"
 
     # Kiểm toán Bẫy 3: Khối 6, 7, 8, 9 không có môn ECONOMIC_LEGAL_EDU (đó là CIVIC_EDUCATION)
     grade_str = str(result.get("grade_level") or "")
